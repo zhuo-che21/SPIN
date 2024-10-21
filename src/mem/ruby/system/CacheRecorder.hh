@@ -32,16 +32,22 @@
  * time. Also dump the requests to a gziped file.
  */
 
-#ifndef __MEM_RUBY_RECORDER_CACHERECORDER_HH__
-#define __MEM_RUBY_RECORDER_CACHERECORDER_HH__
+#ifndef __MEM_RUBY_SYSTEM_CACHERECORDER_HH__
+#define __MEM_RUBY_SYSTEM_CACHERECORDER_HH__
 
 #include <vector>
 
 #include "base/types.hh"
-#include "mem/protocol/RubyRequestType.hh"
 #include "mem/ruby/common/Address.hh"
 #include "mem/ruby/common/DataBlock.hh"
 #include "mem/ruby/common/TypeDefines.hh"
+#include "mem/ruby/protocol/RubyRequestType.hh"
+
+namespace gem5
+{
+
+namespace ruby
+{
 
 class Sequencer;
 
@@ -51,7 +57,8 @@ class Sequencer;
  * length object, so that while writing the data to a file one does not
  * need to copy the meta data and the actual data separately.
  */
-class TraceRecord {
+class TraceRecord
+{
   public:
     int m_cntrl_id;
     Tick m_time;
@@ -77,6 +84,8 @@ class CacheRecorder
                    RubyRequestType type, Tick time, DataBlock& data);
 
     uint64_t aggregateRecords(uint8_t **data, uint64_t size);
+
+    uint64_t getNumRecords() const;
 
     /*!
      * Function for flushing the memory contents of the caches to the
@@ -126,4 +135,7 @@ operator<<(std::ostream& out, const TraceRecord& obj)
     return out;
 }
 
-#endif // __MEM_RUBY_RECORDER_CACHERECORDER_HH__
+} // namespace ruby
+} // namespace gem5
+
+#endif //__MEM_RUBY_SYSTEM_CACHERECORDER_HH__

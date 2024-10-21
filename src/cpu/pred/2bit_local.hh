@@ -36,9 +36,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Kevin Lim
- *          Timothy M. Jones
  */
 
 #ifndef __CPU_PRED_2BIT_LOCAL_PRED_HH__
@@ -46,10 +43,16 @@
 
 #include <vector>
 
+#include "base/sat_counter.hh"
 #include "base/types.hh"
 #include "cpu/pred/bpred_unit.hh"
-#include "cpu/pred/sat_counter.hh"
 #include "params/LocalBP.hh"
+
+namespace gem5
+{
+
+namespace branch_prediction
+{
 
 /**
  * Implements a local predictor that uses the PC to index into a table of
@@ -64,7 +67,7 @@ class LocalBP : public BPredUnit
     /**
      * Default branch predictor constructor.
      */
-    LocalBP(const LocalBPParams *params);
+    LocalBP(const LocalBPParams &params);
 
     virtual void uncondBranch(ThreadID tid, Addr pc, void * &bp_history);
 
@@ -92,15 +95,10 @@ class LocalBP : public BPredUnit
      * @param taken Whether or not the branch was taken.
      */
     void update(ThreadID tid, Addr branch_addr, bool taken, void *bp_history,
-                bool squashed);
-
-    void retireSquashed(ThreadID tid, void *bp_history)
-    { assert(bp_history == NULL); }
+                bool squashed, const StaticInstPtr & inst, Addr corrTarget);
 
     void squash(ThreadID tid, void *bp_history)
     { assert(bp_history == NULL); }
-
-    void reset();
 
   private:
     /**
@@ -114,20 +112,23 @@ class LocalBP : public BPredUnit
     /** Calculates the local index based on the PC. */
     inline unsigned getLocalIndex(Addr &PC);
 
-    /** Array of counters that make up the local predictor. */
-    std::vector<SatCounter> localCtrs;
-
     /** Size of the local predictor. */
-    unsigned localPredictorSize;
-
-    /** Number of sets. */
-    unsigned localPredictorSets;
+    const unsigned localPredictorSize;
 
     /** Number of bits of the local predictor's counters. */
-    unsigned localCtrBits;
+    const unsigned localCtrBits;
+
+    /** Number of sets. */
+    const unsigned localPredictorSets;
+
+    /** Array of counters that make up the local predictor. */
+    std::vector<SatCounter8> localCtrs;
 
     /** Mask to get index bits. */
-    unsigned indexMask;
+    const unsigned indexMask;
 };
+
+} // namespace branch_prediction
+} // namespace gem5
 
 #endif // __CPU_PRED_2BIT_LOCAL_PRED_HH__

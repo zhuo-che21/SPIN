@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Anthony Gutierrez
  */
 
 /* @file
@@ -35,9 +33,15 @@
 #ifndef __CPU_PRED_BI_MODE_PRED_HH__
 #define __CPU_PRED_BI_MODE_PRED_HH__
 
+#include "base/sat_counter.hh"
 #include "cpu/pred/bpred_unit.hh"
-#include "cpu/pred/sat_counter.hh"
 #include "params/BiModeBP.hh"
+
+namespace gem5
+{
+
+namespace branch_prediction
+{
 
 /**
  * Implements a bi-mode branch predictor. The bi-mode predictor is a two-level
@@ -56,20 +60,19 @@
 class BiModeBP : public BPredUnit
 {
   public:
-    BiModeBP(const BiModeBPParams *params);
+    BiModeBP(const BiModeBPParams &params);
     void uncondBranch(ThreadID tid, Addr pc, void * &bp_history);
     void squash(ThreadID tid, void *bp_history);
     bool lookup(ThreadID tid, Addr branch_addr, void * &bp_history);
     void btbUpdate(ThreadID tid, Addr branch_addr, void * &bp_history);
     void update(ThreadID tid, Addr branch_addr, bool taken, void *bp_history,
-                bool squashed);
-    void retireSquashed(ThreadID tid, void *bp_history);
-    unsigned getGHR(ThreadID tid, void *bp_history) const;
+                bool squashed, const StaticInstPtr & inst, Addr corrTarget);
 
   private:
     void updateGlobalHistReg(ThreadID tid, bool taken);
 
-    struct BPHistory {
+    struct BPHistory
+    {
         unsigned globalHistoryReg;
         // was the taken array's prediction used?
         // true: takenPred used
@@ -89,13 +92,6 @@ class BiModeBP : public BPredUnit
         bool finalPred;
     };
 
-    // choice predictors
-    std::vector<SatCounter> choiceCounters;
-    // taken direction predictors
-    std::vector<SatCounter> takenCounters;
-    // not-taken direction predictors
-    std::vector<SatCounter> notTakenCounters;
-
     std::vector<unsigned> globalHistoryReg;
     unsigned globalHistoryBits;
     unsigned historyRegisterMask;
@@ -107,9 +103,19 @@ class BiModeBP : public BPredUnit
     unsigned globalCtrBits;
     unsigned globalHistoryMask;
 
+    // choice predictors
+    std::vector<SatCounter8> choiceCounters;
+    // taken direction predictors
+    std::vector<SatCounter8> takenCounters;
+    // not-taken direction predictors
+    std::vector<SatCounter8> notTakenCounters;
+
     unsigned choiceThreshold;
     unsigned takenThreshold;
     unsigned notTakenThreshold;
 };
+
+} // namespace branch_prediction
+} // namespace gem5
 
 #endif // __CPU_PRED_BI_MODE_PRED_HH__

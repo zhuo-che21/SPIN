@@ -1,4 +1,4 @@
-# Copyright (c) 2014 ARM Limited
+# Copyright (c) 2014,2019 ARM Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -46,7 +46,7 @@
 # debugging.
 
 import argparse
-import ConfigParser
+import configparser
 import inspect
 import json
 import re
@@ -56,34 +56,56 @@ import m5
 import m5.ticks as ticks
 
 sim_object_classes_by_name = {
-    cls.__name__: cls for cls in m5.objects.__dict__.itervalues()
-    if inspect.isclass(cls) and issubclass(cls, m5.objects.SimObject) }
+    cls.__name__: cls
+    for cls in list(m5.objects.__dict__.values())
+    if inspect.isclass(cls) and issubclass(cls, m5.objects.SimObject)
+}
 
 # Add some parsing functions to Param classes to handle reading in .ini
 #   file elements.  This could be moved into src/python/m5/params.py if
 #   reading .ini files from Python proves to be useful
 
-def no_parser(cls, flags, param):
-    raise Exception('Can\'t parse string: %s for parameter'
-        ' class: %s' % (str(param), cls.__name__))
 
-def simple_parser(suffix='', cast=lambda i: i):
+def no_parser(cls, flags, param):
+    raise Exception(
+        f"Can't parse string: {str(param)} for parameter class: {cls.__name__}"
+    )
+
+
+def simple_parser(suffix="", cast=lambda i: i):
     def body(cls, flags, param):
         return cls(cast(param + suffix))
+
     return body
+
 
 # def tick_parser(cast=m5.objects.Latency): # lambda i: i):
 def tick_parser(cast=lambda i: i):
     def body(cls, flags, param):
         old_param = param
-        ret = cls(cast(str(param) + 't'))
+        ret = cls(cast(str(param) + "t"))
         return ret
+
     return body
+
 
 def addr_range_parser(cls, flags, param):
     sys.stdout.flush()
-    low, high = param.split(':')
-    return m5.objects.AddrRange(long(low), long(high))
+    _param = param.split(":")
+    (start, end) = _param[0:2]
+    if len(_param) == 2:
+        return m5.objects.AddrRange(start=int(start), end=int(end))
+    else:
+        assert len(_param) > 2
+        intlv_match = _param[2]
+        masks = [int(m) for m in _param[3:]]
+        return m5.objects.AddrRange(
+            start=int(start),
+            end=int(end),
+            masks=masks,
+            intlvMatch=int(intlv_match),
+        )
+
 
 def memory_bandwidth_parser(cls, flags, param):
     # The string will be in tick/byte
@@ -91,30 +113,32 @@ def memory_bandwidth_parser(cls, flags, param):
     value = 1.0 / float(param)
     # Convert to byte/s
     value = ticks.fromSeconds(value)
-    return cls('%fB/s' % value)
+    return cls(f"{value:f}B/s")
+
 
 # These parameters have trickier parsing from .ini files than might be
 #   expected
 param_parsers = {
-    'Bool': simple_parser(),
-    'ParamValue': no_parser,
-    'NumericParamValue': simple_parser(cast=long),
-    'TickParamValue': tick_parser(),
-    'Frequency': tick_parser(cast=m5.objects.Latency),
-    'Current': simple_parser(suffix='A'),
-    'Voltage': simple_parser(suffix='V'),
-    'Enum': simple_parser(),
-    'MemorySize': simple_parser(suffix='B'),
-    'MemorySize32': simple_parser(suffix='B'),
-    'AddrRange': addr_range_parser,
-    'String': simple_parser(),
-    'MemoryBandwidth': memory_bandwidth_parser,
-    'Time': simple_parser(),
-    'EthernetAddr': simple_parser()
-    }
+    "Bool": simple_parser(),
+    "ParamValue": no_parser,
+    "NumericParamValue": simple_parser(cast=int),
+    "TickParamValue": tick_parser(),
+    "Frequency": tick_parser(cast=m5.objects.Latency),
+    "Current": simple_parser(suffix="A"),
+    "Voltage": simple_parser(suffix="V"),
+    "Enum": simple_parser(),
+    "MemorySize": simple_parser(suffix="B"),
+    "MemorySize32": simple_parser(suffix="B"),
+    "AddrRange": addr_range_parser,
+    "String": simple_parser(),
+    "MemoryBandwidth": memory_bandwidth_parser,
+    "Time": simple_parser(),
+    "EthernetAddr": simple_parser(),
+}
 
-for name, parser in param_parsers.iteritems():
-    setattr(m5.params.__dict__[name], 'parse_ini', classmethod(parser))
+for name, parser in list(param_parsers.items()):
+    setattr(m5.params.__dict__[name], "parse_ini", classmethod(parser))
+
 
 class PortConnection(object):
     """This class is similar to m5.params.PortRef but with just enough
@@ -127,7 +151,7 @@ class PortConnection(object):
 
     @classmethod
     def from_string(cls, str):
-        m = re.match('(.*)\.([^.\[]+)(\[(\d+)\])?', str)
+        m = re.match("(.*)\.([^.\[]+)(\[(\d+)\])?", str)
         object_name, port_name, whole_index, index = m.groups()
         if index is not None:
             index = int(index)
@@ -137,11 +161,14 @@ class PortConnection(object):
         return PortConnection(object_name, port_name, index)
 
     def __str__(self):
-        return '%s.%s[%d]' % (self.object_name, self.port_name, self.index)
+        return "%s.%s[%d]" % (self.object_name, self.port_name, self.index)
 
     def __cmp__(self, right):
-        return cmp((self.object_name, self.port_name, self.index),
-            (right.object_name, right.port_name, right.index))
+        return cmp(
+            (self.object_name, self.port_name, self.index),
+            (right.object_name, right.port_name, right.index),
+        )
+
 
 def to_list(v):
     """Convert any non list to a singleton list"""
@@ -150,8 +177,10 @@ def to_list(v):
     else:
         return [v]
 
+
 class ConfigManager(object):
     """Manager for parsing a Root configuration from a config file"""
+
     def __init__(self, config):
         self.config = config
         self.objects_by_name = {}
@@ -161,34 +190,39 @@ class ConfigManager(object):
         """Find and configure (with just non-SimObject parameters)
         a single object"""
 
-        if object_name == 'Null':
+        if object_name == "Null":
             return NULL
 
         if object_name in self.objects_by_name:
             return self.objects_by_name[object_name]
 
-        object_type = self.config.get_param(object_name, 'type')
+        object_type = self.config.get_param(object_name, "type")
 
         if object_type not in sim_object_classes_by_name:
-            raise Exception('No SimObject type %s is available to'
-                ' build: %s' % (object_type, object_name))
+            raise Exception(
+                f"No SimObject type {object_type} is available to build: {object_name}"
+            )
 
         object_class = sim_object_classes_by_name[object_type]
 
         parsed_params = {}
 
-        for param_name, param in object_class._params.iteritems():
+        for param_name, param in list(object_class._params.items()):
             if issubclass(param.ptype, m5.params.ParamValue):
                 if isinstance(param, m5.params.VectorParamDesc):
-                    param_values = self.config.get_param_vector(object_name,
-                        param_name)
+                    param_values = self.config.get_param_vector(
+                        object_name, param_name
+                    )
 
-                    param_value = [ param.ptype.parse_ini(self.flags, value)
-                        for value in param_values ]
+                    param_value = [
+                        param.ptype.parse_ini(self.flags, value)
+                        for value in param_values
+                    ]
                 else:
                     param_value = param.ptype.parse_ini(
-                        self.flags, self.config.get_param(object_name,
-                        param_name))
+                        self.flags,
+                        self.config.get_param(object_name, param_name),
+                    )
 
                 parsed_params[param_name] = param_value
 
@@ -202,24 +236,35 @@ class ConfigManager(object):
         parameters.  This relies on all referenced objects having been
         created"""
 
-        if object_name == 'Null':
+        if object_name == "Null":
             return NULL
 
-        for param_name, param in obj.__class__._params.iteritems():
+        for param_name, param in list(obj.__class__._params.items()):
             if issubclass(param.ptype, m5.objects.SimObject):
                 if isinstance(param, m5.params.VectorParamDesc):
-                    param_values = self.config.get_param_vector(object_name,
-                        param_name)
+                    param_values = self.config.get_param_vector(
+                        object_name, param_name
+                    )
 
-                    setattr(obj, param_name, [ self.objects_by_name[name]
-                        for name in param_values ])
+                    setattr(
+                        obj,
+                        param_name,
+                        [
+                            self.objects_by_name[name]
+                            if name != "Null"
+                            else m5.params.NULL
+                            for name in param_values
+                        ],
+                    )
                 else:
-                    param_value = self.config.get_param(object_name,
-                        param_name)
+                    param_value = self.config.get_param(
+                        object_name, param_name
+                    )
 
-                    if param_value != 'Null':
-                        setattr(obj, param_name, self.objects_by_name[
-                            param_value])
+                    if param_value != "Null":
+                        setattr(
+                            obj, param_name, self.objects_by_name[param_value]
+                        )
 
         return obj
 
@@ -231,10 +276,13 @@ class ConfigManager(object):
 
         for child_name, child_paths in children:
             param = obj.__class__._params.get(child_name, None)
+            if child_name == "Null":
+                continue
 
             if isinstance(child_paths, list):
-                child_list = [ self.objects_by_name[path]
-                    for path in child_paths ]
+                child_list = [
+                    self.objects_by_name[path] for path in child_paths
+                ]
             else:
                 child_list = self.objects_by_name[child_paths]
 
@@ -248,7 +296,7 @@ class ConfigManager(object):
     def parse_port_name(self, port):
         """Parse the name of a port"""
 
-        m = re.match('(.*)\.([^.\[]+)(\[(\d+)\])?', port)
+        m = re.match("(.*)\.([^.\[]+)(\[(\d+)\])?", port)
         peer, peer_port, whole_index, index = m.groups()
         if index is not None:
             index = int(index)
@@ -260,46 +308,49 @@ class ConfigManager(object):
     def gather_port_connections(self, object_name, obj):
         """Gather all the port-to-port connections from the named object.
         Returns a list of (PortConnection, PortConnection) with unordered
-        (wrt. master/slave) connection information"""
+        (wrt. requestor/responder) connection information"""
 
-        if object_name == 'Null':
+        if object_name == "Null":
             return NULL
 
         parsed_ports = []
-        for port_name, port in obj.__class__._ports.iteritems():
+        for port_name, port in list(obj.__class__._ports.items()):
             # Assume that unnamed ports are unconnected
             peers = self.config.get_port_peers(object_name, port_name)
 
-            for index, peer in zip(xrange(0, len(peers)), peers):
-                parsed_ports.append((
-                    PortConnection(object_name, port.name, index),
-                    PortConnection.from_string(peer)))
+            for index, peer in zip(list(range(0, len(peers))), peers):
+                parsed_ports.append(
+                    (
+                        PortConnection(object_name, port.name, index),
+                        PortConnection.from_string(peer),
+                    )
+                )
 
         return parsed_ports
 
     def bind_ports(self, connections):
         """Bind all ports from the given connection list.  Note that the
-        connection list *must* list all connections with both (slave,master)
-        and (master,slave) orderings"""
+        connection list *must* list all connections with both
+        (responder,requestor) and (requestor,responder) orderings"""
 
         # Markup a dict of how many connections are made to each port.
         #   This will be used to check that the next-to-be-made connection
         #   has a suitable port index
         port_bind_indices = {}
         for from_port, to_port in connections:
-            port_bind_indices[
-                (from_port.object_name, from_port.port_name)] = 0
+            port_bind_indices[(from_port.object_name, from_port.port_name)] = 0
 
         def port_has_correct_index(port):
-            return port_bind_indices[
-                (port.object_name, port.port_name)] == port.index
+            return (
+                port_bind_indices[(port.object_name, port.port_name)]
+                == port.index
+            )
 
         def increment_port_index(port):
-            port_bind_indices[
-                (port.object_name, port.port_name)] += 1
+            port_bind_indices[(port.object_name, port.port_name)] += 1
 
         # Step through the sorted connections.  Exactly one of
-        #   each (slave,master) and (master,slave) pairs will be
+        #   each (responder,requestor) and (requestor,responder) pairs will be
         #   bindable because the connections are sorted.
         # For example:        port_bind_indices
         #   left      right   left right
@@ -312,8 +363,9 @@ class ConfigManager(object):
         for connection in sorted(connections):
             from_port, to_port = connection
 
-            if (port_has_correct_index(from_port) and
-                port_has_correct_index(to_port)):
+            if port_has_correct_index(from_port) and port_has_correct_index(
+                to_port
+            ):
 
                 connections_to_make.append((from_port, to_port))
 
@@ -323,15 +375,18 @@ class ConfigManager(object):
         # Exactly half of the connections (ie. all of them, one per
         #   direction) must now have been made
         if (len(connections_to_make) * 2) != len(connections):
-            raise Exception('Port bindings can\'t be ordered')
+            raise Exception("Port bindings can't be ordered")
 
         # Actually do the binding
         for from_port, to_port in connections_to_make:
             from_object = self.objects_by_name[from_port.object_name]
             to_object = self.objects_by_name[to_port.object_name]
 
-            setattr(from_object, from_port.port_name,
-                getattr(to_object, to_port.port_name))
+            setattr(
+                from_object,
+                from_port.port_name,
+                getattr(to_object, to_port.port_name),
+            )
 
     def find_all_objects(self):
         """Find and build all SimObjects from the config file and connect
@@ -343,22 +398,23 @@ class ConfigManager(object):
             self.find_object(object_name)
 
         # Add children to objects in the hierarchy from root
-        self.fill_in_children('root', self.find_object('root'))
+        self.fill_in_children("root", self.find_object("root"))
 
         # Now fill in SimObject-valued parameters in the knowledge that
         #   this won't be interpreted as becoming the parent of objects
         #   which are already in the root hierarchy
-        for name, obj in self.objects_by_name.iteritems():
+        for name, obj in list(self.objects_by_name.items()):
             self.fill_in_simobj_parameters(name, obj)
 
         # Gather a list of all port-to-port connections
         connections = []
-        for name, obj in self.objects_by_name.iteritems():
+        for name, obj in list(self.objects_by_name.items()):
             connections += self.gather_port_connections(name, obj)
 
         # Find an acceptable order to bind those port connections and
         #   bind them
         self.bind_ports(connections)
+
 
 class ConfigFile(object):
     def get_flags(self):
@@ -393,9 +449,10 @@ class ConfigFile(object):
         object.port(\[index\])?) of the port object_name.port_name"""
         pass
 
+
 class ConfigIniFile(ConfigFile):
     def __init__(self):
-        self.parser = ConfigParser.ConfigParser()
+        self.parser = configparser.ConfigParser()
 
     def load(self, config_file):
         self.parser.read(config_file)
@@ -410,19 +467,19 @@ class ConfigIniFile(ConfigFile):
         return self.parser.get(object_name, param_name).split()
 
     def get_object_children(self, object_name):
-        if self.parser.has_option(object_name, 'children'):
-            children = self.parser.get(object_name, 'children')
+        if self.parser.has_option(object_name, "children"):
+            children = self.parser.get(object_name, "children")
             child_names = children.split()
         else:
             child_names = []
 
         def make_path(child_name):
-            if object_name == 'root':
+            if object_name == "root":
                 return child_name
             else:
-                return '%s.%s' % (object_name, child_name)
+                return f"{object_name}.{child_name}"
 
-        return [ (name, make_path(name)) for name in child_names ]
+        return [(name, make_path(name)) for name in child_names]
 
     def get_port_peers(self, object_name, port_name):
         if self.parser.has_option(object_name, port_name):
@@ -431,26 +488,27 @@ class ConfigIniFile(ConfigFile):
         else:
             return []
 
+
 class ConfigJsonFile(ConfigFile):
     def __init__(self):
         pass
 
     def is_sim_object(self, node):
-        return isinstance(node, dict) and 'path' in node
+        return isinstance(node, dict) and "path" in node
 
     def find_all_objects(self, node):
         if self.is_sim_object(node):
-            self.object_dicts[node['path']] = node
+            self.object_dicts[node["path"]] = node
 
         if isinstance(node, list):
             for elem in node:
                 self.find_all_objects(elem)
         elif isinstance(node, dict):
-            for elem in node.itervalues():
+            for elem in list(node.values()):
                 self.find_all_objects(elem)
 
     def load(self, config_file):
-        root = json.load(open(config_file, 'r'))
+        root = json.load(open(config_file, "r"))
         self.object_dicts = {}
         self.find_all_objects(root)
 
@@ -461,7 +519,7 @@ class ConfigJsonFile(ConfigFile):
         if node is None:
             return "Null"
         elif self.is_sim_object(node):
-            return node['path']
+            return node["path"]
         else:
             return str(node)
 
@@ -473,7 +531,7 @@ class ConfigJsonFile(ConfigFile):
     def get_param_vector(self, object_name, param_name):
         obj = self.object_dicts[object_name]
 
-        return [ self.parse_param_string(p) for p in obj[param_name] ]
+        return [self.parse_param_string(p) for p in obj[param_name]]
 
     def get_object_children(self, object_name):
         """It is difficult to tell which elements are children in the
@@ -485,12 +543,15 @@ class ConfigJsonFile(ConfigFile):
         obj = self.object_dicts[object_name]
 
         children = []
-        for name, node in obj.iteritems():
+        for name, node in list(obj.items()):
             if self.is_sim_object(node):
-                children.append((name, node['path']))
-            elif isinstance(node, list) and node != [] and all([
-                self.is_sim_object(e) for e in node ]):
-                children.append((name, [ e['path'] for e in node ]))
+                children.append((name, node["path"]))
+            elif (
+                isinstance(node, list)
+                and node != []
+                and all([self.is_sim_object(e) for e in node])
+            ):
+                children.append((name, [e["path"] for e in node]))
 
         return children
 
@@ -500,20 +561,34 @@ class ConfigJsonFile(ConfigFile):
         obj = self.object_dicts[object_name]
 
         peers = []
-        if port_name in obj and 'peer' in obj[port_name] and \
-            'role' in obj[port_name]:
-            peers = to_list(obj[port_name]['peer'])
+        if (
+            port_name in obj
+            and "peer" in obj[port_name]
+            and "role" in obj[port_name]
+        ):
+            peers = to_list(obj[port_name]["peer"])
 
         return peers
 
+
 parser = argparse.ArgumentParser()
 
-parser.add_argument('config_file', metavar='config-file.ini',
-    help='.ini configuration file to load and run')
+parser.add_argument(
+    "config_file",
+    metavar="config-file.ini",
+    help=".ini configuration file to load and run",
+)
+parser.add_argument(
+    "--checkpoint-dir",
+    type=str,
+    default=None,
+    help="A checkpoint to directory to restore when starting "
+    "the simulation",
+)
 
 args = parser.parse_args(sys.argv[1:])
 
-if args.config_file.endswith('.ini'):
+if args.config_file.endswith(".ini"):
     config = ConfigIniFile()
     config.load(args.config_file)
 else:
@@ -526,8 +601,7 @@ mgr = ConfigManager(config)
 
 mgr.find_all_objects()
 
-m5.instantiate()
+m5.instantiate(args.checkpoint_dir)
 
 exit_event = m5.simulate()
-print 'Exiting @ tick %i because %s' % (
-    m5.curTick(), exit_event.getCause())
+print("Exiting @ tick %i because %s" % (m5.curTick(), exit_event.getCause()))

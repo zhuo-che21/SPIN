@@ -33,8 +33,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Rene de Jong
  */
 
 /** @file
@@ -71,17 +69,20 @@
 
 #include "dev/arm/ufs_device.hh"
 
+namespace gem5
+{
+
 /**
  * Constructor and destructor functions of UFSHCM device
  */
-UFSHostDevice::UFSSCSIDevice::UFSSCSIDevice(const UFSHostDeviceParams* p,
-                             uint32_t lun_id, Callback *transfer_cb,
-                             Callback *read_cb):
+UFSHostDevice::UFSSCSIDevice::UFSSCSIDevice(const UFSHostDeviceParams &p,
+                             uint32_t lun_id, const Callback &transfer_cb,
+                             const Callback &read_cb):
     SimObject(p),
-    flashDisk(p->image[lun_id]),
-    flashDevice(p->internalflash[lun_id]),
-    blkSize(p->img_blk_size),
-    lunAvail(p->image.size()),
+    flashDisk(p.image[lun_id]),
+    flashDevice(p.internalflash[lun_id]),
+    blkSize(p.img_blk_size),
+    lunAvail(p.image.size()),
     diskSize(flashDisk->size()),
     capacityLower((diskSize - 1) & 0xffffffff),
     capacityUpper((diskSize - SectorSize) >> 32),
@@ -99,11 +100,9 @@ UFSHostDevice::UFSSCSIDevice::UFSSCSIDevice(const UFSHostDeviceParams* p,
      * or from the UFS SCSI device to the UFS host.
      */
     signalDone = transfer_cb;
-    memReadCallback = new MakeCallback<UFSSCSIDevice,
-        &UFSHostDevice::UFSSCSIDevice::readCallback>(this);
+    memReadCallback = [this]() { readCallback(); };
     deviceReadCallback = read_cb;
-    memWriteCallback = new MakeCallback<UFSSCSIDevice,
-        &UFSHostDevice::UFSSCSIDevice::SSDWriteDone>(this);
+    memWriteCallback = [this]() { SSDWriteDone(); };
 
     /**
      * make ascii out of lun_id (and add more characters)
@@ -161,7 +160,7 @@ struct UFSHostDevice::SCSIReply
 UFSHostDevice::UFSSCSIDevice::SCSICMDHandle(uint32_t* SCSI_msg)
 {
     struct SCSIReply scsi_out;
-    memset(&scsi_out, 0, sizeof(struct SCSIReply));
+    scsi_out.reset();
 
     /**
      * Create the standard SCSI reponse information
@@ -716,15 +715,15 @@ UFSHostDevice::UFSSCSIDevice::writeFlash(uint8_t* writeaddr, uint64_t offset,
  * Constructor for the UFS Host device
  */
 
-UFSHostDevice::UFSHostDevice(const UFSHostDeviceParams* p) :
+UFSHostDevice::UFSHostDevice(const UFSHostDeviceParams &p) :
     DmaDevice(p),
-    pioAddr(p->pio_addr),
+    pioAddr(p.pio_addr),
     pioSize(0x0FFF),
-    pioDelay(p->pio_latency),
-    intNum(p->int_num),
-    gic(p->gic),
-    lunAvail(p->image.size()),
-    UFSSlots(p->ufs_slots - 1),
+    pioDelay(p.pio_latency),
+    intNum(p.int_num),
+    gic(p.gic),
+    lunAvail(p.image.size()),
+    UFSSlots(p.ufs_slots - 1),
     readPendingNum(0),
     writePendingNum(0),
     activeDoorbells(0),
@@ -733,21 +732,18 @@ UFSHostDevice::UFSHostDevice(const UFSHostDeviceParams* p) :
     transferTrack(0),
     taskCommandTrack(0),
     idlePhaseStart(0),
-    SCSIResumeEvent(this),
-    UTPEvent(this)
+    stats(this),
+    SCSIResumeEvent([this]{ SCSIStart(); }, name()),
+    UTPEvent([this]{ finalUTP(); }, name())
 {
     DPRINTF(UFSHostDevice, "The hostcontroller hosts %d Logic units\n",
             lunAvail);
     UFSDevice.resize(lunAvail);
 
-    transferDoneCallback = new MakeCallback<UFSHostDevice,
-        &UFSHostDevice::LUNSignal>(this);
-    memReadCallback = new MakeCallback<UFSHostDevice,
-        &UFSHostDevice::readCallback>(this);
-
     for (int count = 0; count < lunAvail; count++) {
-        UFSDevice[count] = new UFSSCSIDevice(p, count, transferDoneCallback,
-                                             memReadCallback);
+        UFSDevice[count] = new UFSSCSIDevice(p, count,
+                [this]() { LUNSignal(); },
+                [this]() { readCallback(); });
     }
 
     if (UFSSlots > 31)
@@ -760,127 +756,118 @@ UFSHostDevice::UFSHostDevice(const UFSHostDeviceParams* p) :
     setValues();
 }
 
-/**
- * Create the parameters of this device
- */
-
-UFSHostDevice*
-UFSHostDeviceParams::create()
+UFSHostDevice::
+UFSHostDeviceStats::UFSHostDeviceStats(UFSHostDevice *parent)
+    : statistics::Group(parent, "UFSDiskHost"),
+      ADD_STAT(currentSCSIQueue, statistics::units::Count::get(),
+               "Most up to date length of the command queue"),
+      ADD_STAT(currentReadSSDQueue, statistics::units::Count::get(),
+               "Most up to date length of the read SSD queue"),
+      ADD_STAT(currentWriteSSDQueue, statistics::units::Count::get(),
+               "Most up to date length of the write SSD queue"),
+      /** Amount of data read/written */
+      ADD_STAT(totalReadSSD, statistics::units::Byte::get(),
+               "Number of bytes read from SSD"),
+      ADD_STAT(totalWrittenSSD, statistics::units::Byte::get(),
+               "Number of bytes written to SSD"),
+      ADD_STAT(totalReadDiskTransactions, statistics::units::Count::get(),
+               "Number of transactions from disk"),
+      ADD_STAT(totalWriteDiskTransactions, statistics::units::Count::get(),
+               "Number of transactions to disk"),
+      ADD_STAT(totalReadUFSTransactions, statistics::units::Count::get(),
+               "Number of transactions from device"),
+      ADD_STAT(totalWriteUFSTransactions, statistics::units::Count::get(),
+               "Number of transactions to device"),
+      /** Average bandwidth for reads and writes */
+      ADD_STAT(averageReadSSDBW, statistics::units::Rate<
+                    statistics::units::Byte, statistics::units::Second>::get(),
+               "Average read bandwidth",
+               totalReadSSD / simSeconds),
+      ADD_STAT(averageWriteSSDBW, statistics::units::Rate<
+                    statistics::units::Byte, statistics::units::Second>::get(),
+               "Average write bandwidth",
+               totalWrittenSSD / simSeconds),
+      ADD_STAT(averageSCSIQueue, statistics::units::Rate<
+                    statistics::units::Count, statistics::units::Tick>::get(),
+               "Average command queue length"),
+      ADD_STAT(averageReadSSDQueue, statistics::units::Rate<
+                    statistics::units::Count, statistics::units::Tick>::get(),
+               "Average read queue length"),
+      ADD_STAT(averageWriteSSDQueue, statistics::units::Rate<
+                    statistics::units::Count, statistics::units::Tick>::get(),
+               "Average write queue length"),
+      /** Number of doorbells rung*/
+      ADD_STAT(curDoorbell, statistics::units::Count::get(),
+               "Most up to date number of doorbells used",
+               parent->activeDoorbells),
+      ADD_STAT(maxDoorbell, statistics::units::Count::get(),
+               "Maximum number of doorbells utilized"),
+      ADD_STAT(averageDoorbell, statistics::units::Rate<
+                    statistics::units::Count, statistics::units::Tick>::get(),
+               "Average number of Doorbells used"),
+      /** Latency*/
+      ADD_STAT(transactionLatency, statistics::units::Tick::get(),
+               "Histogram of transaction times"),
+      ADD_STAT(idleTimes, statistics::units::Tick::get(), "Histogram of idle times")
 {
-    return new UFSHostDevice(this);
-}
-
-
-void
-UFSHostDevice::regStats()
-{
-    DmaDevice::regStats();
-
-    using namespace Stats;
-
-    std::string UFSHost_name = name() + ".UFSDiskHost";
+    using namespace statistics;
 
     // Register the stats
     /** Queue lengths */
-    stats.currentSCSIQueue
-        .name(UFSHost_name + ".currentSCSIQueue")
-        .desc("Most up to date length of the command queue")
+    currentSCSIQueue
         .flags(none);
-    stats.currentReadSSDQueue
-        .name(UFSHost_name + ".currentReadSSDQueue")
-        .desc("Most up to date length of the read SSD queue")
+    currentReadSSDQueue
         .flags(none);
-    stats.currentWriteSSDQueue
-        .name(UFSHost_name + ".currentWriteSSDQueue")
-        .desc("Most up to date length of the write SSD queue")
+    currentWriteSSDQueue
         .flags(none);
 
     /** Amount of data read/written */
-    stats.totalReadSSD
-        .name(UFSHost_name + ".totalReadSSD")
-        .desc("Number of bytes read from SSD")
+    totalReadSSD
         .flags(none);
 
-    stats.totalWrittenSSD
-        .name(UFSHost_name + ".totalWrittenSSD")
-        .desc("Number of bytes written to SSD")
+    totalWrittenSSD
         .flags(none);
 
-    stats.totalReadDiskTransactions
-        .name(UFSHost_name + ".totalReadDiskTransactions")
-        .desc("Number of transactions from disk")
+    totalReadDiskTransactions
         .flags(none);
-    stats.totalWriteDiskTransactions
-        .name(UFSHost_name + ".totalWriteDiskTransactions")
-        .desc("Number of transactions to disk")
+    totalWriteDiskTransactions
         .flags(none);
-    stats.totalReadUFSTransactions
-        .name(UFSHost_name + ".totalReadUFSTransactions")
-        .desc("Number of transactions from device")
+    totalReadUFSTransactions
         .flags(none);
-    stats.totalWriteUFSTransactions
-        .name(UFSHost_name + ".totalWriteUFSTransactions")
-        .desc("Number of transactions to device")
+    totalWriteUFSTransactions
         .flags(none);
 
     /** Average bandwidth for reads and writes */
-    stats.averageReadSSDBW
-        .name(UFSHost_name + ".averageReadSSDBandwidth")
-        .desc("Average read bandwidth (bytes/s)")
+    averageReadSSDBW
         .flags(nozero);
 
-    stats.averageReadSSDBW = stats.totalReadSSD / simSeconds;
-
-    stats.averageWriteSSDBW
-        .name(UFSHost_name + ".averageWriteSSDBandwidth")
-        .desc("Average write bandwidth (bytes/s)")
+    averageWriteSSDBW
         .flags(nozero);
 
-    stats.averageWriteSSDBW = stats.totalWrittenSSD / simSeconds;
-
-    stats.averageSCSIQueue
-        .name(UFSHost_name + ".averageSCSIQueueLength")
-        .desc("Average command queue length")
+    averageSCSIQueue
         .flags(nozero);
-    stats.averageReadSSDQueue
-        .name(UFSHost_name + ".averageReadSSDQueueLength")
-        .desc("Average read queue length")
+    averageReadSSDQueue
         .flags(nozero);
-    stats.averageWriteSSDQueue
-        .name(UFSHost_name + ".averageWriteSSDQueueLength")
-        .desc("Average write queue length")
+    averageWriteSSDQueue
         .flags(nozero);
 
     /** Number of doorbells rung*/
-    stats.curDoorbell
-        .name(UFSHost_name + ".curDoorbell")
-        .desc("Most up to date number of doorbells used")
+    curDoorbell
         .flags(none);
 
-    stats.curDoorbell = activeDoorbells;
-
-    stats.maxDoorbell
-        .name(UFSHost_name + ".maxDoorbell")
-        .desc("Maximum number of doorbells utilized")
+    maxDoorbell
         .flags(none);
-    stats.averageDoorbell
-        .name(UFSHost_name + ".averageDoorbell")
-        .desc("Average number of Doorbells used")
+    averageDoorbell
         .flags(nozero);
 
     /** Latency*/
-    stats.transactionLatency
+    transactionLatency
         .init(100)
-        .name(UFSHost_name + ".transactionLatency")
-        .desc("Histogram of transaction times")
         .flags(pdf);
 
-    stats.idleTimes
+    idleTimes
         .init(100)
-        .name(UFSHost_name + ".idlePeriods")
-        .desc("Histogram of idle times")
         .flags(pdf);
-
 }
 
 /**
@@ -1053,7 +1040,7 @@ UFSHostDevice::read(PacketPtr pkt)
         break;
     }
 
-    pkt->set<uint32_t>(data);
+    pkt->setLE<uint32_t>(data);
     pkt->makeResponse();
     return pioDelay;
 }
@@ -1066,26 +1053,9 @@ UFSHostDevice::read(PacketPtr pkt)
 Tick
 UFSHostDevice::write(PacketPtr pkt)
 {
-    uint32_t data = 0;
+    assert(pkt->getSize() <= 4);
 
-    switch (pkt->getSize()) {
-
-      case 1:
-        data = pkt->get<uint8_t>();
-        break;
-
-      case 2:
-        data = pkt->get<uint16_t>();
-        break;
-
-      case 4:
-        data = pkt->get<uint32_t>();
-        break;
-
-      default:
-        panic("Undefined UFSHCD controller write size!\n");
-        break;
-    }
+    const uint32_t data = pkt->getUintX(ByteOrder::little);
 
     switch (pkt->getAddr() & 0xFF)
     {
@@ -1280,7 +1250,8 @@ UFSHostDevice::requestHandler()
             task_info.size = size;
             task_info.done = UFSHCIMem.TMUTMRLDBR;
             taskInfo.push_back(task_info);
-            taskEventQueue.push_back(this);
+            taskEventQueue.push_back(
+                EventFunctionWrapper([this]{ taskStart(); }, name()));
             writeDevice(&taskEventQueue.back(), false, address, size,
                         reinterpret_cast<uint8_t*>
                         (&taskInfo.back().destination), 0, 0);
@@ -1328,7 +1299,8 @@ UFSHostDevice::requestHandler()
                 UTPTransferReqDesc;
             DPRINTF(UFSHostDevice, "Initial transfer start: 0x%8x\n",
                     transferstart_info.done);
-            transferEventQueue.push_back(this);
+            transferEventQueue.push_back(
+                EventFunctionWrapper([this]{ transferStart(); }, name()));
 
             if (transferEventQueue.size() < 2) {
                 writeDevice(&transferEventQueue.front(), false,
@@ -1890,7 +1862,9 @@ UFSHostDevice::writeDevice(Event* additional_action, bool toDisk, Addr
                                           < curTick()))
             writeDoneEvent.pop_front();
 
-        writeDoneEvent.push_back(this);
+        writeDoneEvent.push_back(
+            EventFunctionWrapper([this]{ writeDone(); },
+                                 name()));
         assert(!writeDoneEvent.back().scheduled());
 
         /**destination is an offset here since we are writing to a disk*/
@@ -2068,7 +2042,7 @@ UFSHostDevice::UFSSCSIDevice::SSDWriteDone()
 
         //Callback UFS Host
         setSignal();
-        signalDone->process();
+        signalDone();
     }
 
 }
@@ -2089,7 +2063,9 @@ UFSHostDevice::readDevice(bool lastTransfer, Addr start, uint32_t size,
     /** check wether interrupt is needed */
     if (lastTransfer) {
         ++readPendingNum;
-        readDoneEvent.push_back(this);
+        readDoneEvent.push_back(
+            EventFunctionWrapper([this]{ readDone(); },
+                                 name()));
         assert(!readDoneEvent.back().scheduled());
         dmaPort.dmaAction(MemCmd::WriteReq, start, size,
                           &readDoneEvent.back(), destination, 0);
@@ -2209,7 +2185,7 @@ UFSHostDevice::UFSSCSIDevice::SSDReadDone()
 
         /**Callback: transferdone*/
         setSignal();
-        signalDone->process();
+        signalDone();
     }
 
 }
@@ -2227,7 +2203,7 @@ UFSHostDevice::UFSSCSIDevice::readCallback()
      * UFSHostDevice::readCallback
      */
     setReadSignal();
-    deviceReadCallback->process();
+    deviceReadCallback();
 
     //Are we done yet?
     SSDReadDone();
@@ -2256,7 +2232,8 @@ UFSHostDevice::readCallback()
         UFSDevice[this_lun]->clearReadSignal();
         SSDReadPending.push_back(UFSDevice[this_lun]->SSDReadInfo.front());
         UFSDevice[this_lun]->SSDReadInfo.pop_front();
-        readGarbageEventQueue.push_back(this);
+        readGarbageEventQueue.push_back(
+            EventFunctionWrapper([this]{ readGarbage(); }, name()));
 
         //make sure the queue is popped a the end of the dma transaction
         readDevice(false, SSDReadPending.front().offset,
@@ -2351,3 +2328,5 @@ UFSHostDevice::checkDrain()
         signalDrainDone();
     }
 }
+
+} // namespace gem5

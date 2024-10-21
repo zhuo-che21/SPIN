@@ -2,8 +2,6 @@
  * Copyright (c) 2015 Advanced Micro Devices, Inc.
  * All rights reserved.
  *
- * For use for simulation and test purposes only
- *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *
@@ -14,9 +12,9 @@
  * this list of conditions and the following disclaimer in the documentation
  * and/or other materials provided with the distribution.
  *
- * 3. Neither the name of the copyright holder nor the names of its contributors
- * may be used to endorse or promote products derived from this software
- * without specific prior written permission.
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from this
+ * software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -29,15 +27,16 @@
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * Author: Anthony Gutierrez
  */
 
 #include "gpu-compute/gpu_exec_context.hh"
 #include "gpu-compute/wavefront.hh"
 
+namespace gem5
+{
+
 GPUExecContext::GPUExecContext(ComputeUnit *_cu, Wavefront *_wf)
-    : cu(_cu), wf(_wf), gpuISA(_wf->gpuISA())
+    : cu(_cu), wf(_wf), gpuISA(_wf ? &_wf->gpuISA() : nullptr)
 {
 }
 
@@ -53,14 +52,18 @@ GPUExecContext::wavefront()
     return wf;
 }
 
-TheGpuISA::MiscReg
+RegVal
 GPUExecContext::readMiscReg(int opIdx) const
 {
-    return gpuISA.readMiscReg(opIdx);
+    assert(gpuISA);
+    return gpuISA->readMiscReg(opIdx);
 }
 
 void
-GPUExecContext::writeMiscReg(int opIdx, TheGpuISA::MiscReg operandVal)
+GPUExecContext::writeMiscReg(int opIdx, RegVal val)
 {
-    gpuISA.writeMiscReg(opIdx, operandVal);
+    assert(gpuISA);
+    gpuISA->writeMiscReg(opIdx, val);
 }
+
+} // namespace gem5

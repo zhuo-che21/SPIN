@@ -36,8 +36,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Ali Saidi
  */
 
 /* @file
@@ -48,7 +46,7 @@
 
 #include <algorithm>
 
-#include "base/cp_annotate.hh"
+#include "base/compiler.hh"
 #include "base/trace.hh"
 #include "debug/DMACopyEngine.hh"
 #include "debug/Drain.hh"
@@ -58,14 +56,18 @@
 #include "sim/stats.hh"
 #include "sim/system.hh"
 
-using namespace CopyEngineReg;
+namespace gem5
+{
 
-CopyEngine::CopyEngine(const Params *p)
-    : PciDevice(p)
+using namespace copy_engine_reg;
+
+CopyEngine::CopyEngine(const Params &p)
+    : PciDevice(p),
+      copyEngineStats(this, p.ChanCnt)
 {
     // All Reg regs are initialized to 0 by default
-    regs.chanCount = p->ChanCnt;
-    regs.xferCap = findMsbSet(p->XferCap);
+    regs.chanCount = p.ChanCnt;
+    regs.xferCap = findMsbSet(p.XferCap);
     regs.attnStatus = 0;
 
     if (regs.chanCount > 64)
@@ -81,12 +83,14 @@ CopyEngine::CopyEngine(const Params *p)
 CopyEngine::CopyEngineChannel::CopyEngineChannel(CopyEngine *_ce, int cid)
     : cePort(_ce, _ce->sys),
       ce(_ce), channelId(cid), busy(false), underReset(false),
-    refreshNext(false), latBeforeBegin(ce->params()->latBeforeBegin),
-    latAfterCompletion(ce->params()->latAfterCompletion),
-    completionDataReg(0), nextState(Idle),
-    fetchCompleteEvent(this), addrCompleteEvent(this),
-    readCompleteEvent(this), writeCompleteEvent(this),
-    statusCompleteEvent(this)
+      refreshNext(false), latBeforeBegin(ce->params().latBeforeBegin),
+      latAfterCompletion(ce->params().latAfterCompletion),
+      completionDataReg(0), nextState(Idle),
+      fetchCompleteEvent([this]{ fetchDescComplete(); }, name()),
+      addrCompleteEvent([this]{ fetchAddrComplete(); }, name()),
+      readCompleteEvent([this]{ readCopyBytesComplete(); }, name()),
+      writeCompleteEvent([this]{ writeCopyBytesComplete(); }, name()),
+      statusCompleteEvent([this]{ writeStatusComplete(); }, name())
 
 {
         cr.status.dma_transfer_status(3);
@@ -95,7 +99,7 @@ CopyEngine::CopyEngineChannel::CopyEngineChannel(CopyEngine *_ce, int cid)
 
         curDmaDesc = new DmaDesc;
         memset(curDmaDesc, 0, sizeof(DmaDesc));
-        copyBuffer = new uint8_t[ce->params()->XferCap];
+        copyBuffer = new uint8_t[ce->params().XferCap];
 }
 
 CopyEngine::~CopyEngine()
@@ -111,24 +115,24 @@ CopyEngine::CopyEngineChannel::~CopyEngineChannel()
     delete [] copyBuffer;
 }
 
-BaseMasterPort &
-CopyEngine::getMasterPort(const std::string &if_name, PortID idx)
+Port &
+CopyEngine::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name != "dma") {
         // pass it along to our super class
-        return PciDevice::getMasterPort(if_name, idx);
+        return PciDevice::getPort(if_name, idx);
     } else {
         if (idx >= static_cast<int>(chan.size())) {
-            panic("CopyEngine::getMasterPort: unknown index %d\n", idx);
+            panic("CopyEngine::getPort: unknown index %d\n", idx);
         }
 
-        return chan[idx]->getMasterPort();
+        return chan[idx]->getPort();
     }
 }
 
 
-BaseMasterPort &
-CopyEngine::CopyEngineChannel::getMasterPort()
+Port &
+CopyEngine::CopyEngineChannel::getPort()
 {
     return cePort;
 }
@@ -191,20 +195,20 @@ CopyEngine::read(PacketPtr pkt)
         switch (daddr) {
           case GEN_CHANCOUNT:
             assert(size == sizeof(regs.chanCount));
-            pkt->set<uint8_t>(regs.chanCount);
+            pkt->setLE<uint8_t>(regs.chanCount);
             break;
           case GEN_XFERCAP:
             assert(size == sizeof(regs.xferCap));
-            pkt->set<uint8_t>(regs.xferCap);
+            pkt->setLE<uint8_t>(regs.xferCap);
             break;
           case GEN_INTRCTRL:
             assert(size == sizeof(uint8_t));
-            pkt->set<uint8_t>(regs.intrctrl());
+            pkt->setLE<uint8_t>(regs.intrctrl());
             regs.intrctrl.master_int_enable(0);
             break;
           case GEN_ATTNSTATUS:
             assert(size == sizeof(regs.attnStatus));
-            pkt->set<uint32_t>(regs.attnStatus);
+            pkt->setLE<uint32_t>(regs.attnStatus);
             regs.attnStatus = 0;
             break;
           default:
@@ -242,42 +246,42 @@ CopyEngine::CopyEngineChannel::channelRead(Packet *pkt, Addr daddr, int size)
     switch (daddr) {
       case CHAN_CONTROL:
         assert(size == sizeof(uint16_t));
-        pkt->set<uint16_t>(cr.ctrl());
+        pkt->setLE<uint16_t>(cr.ctrl());
         cr.ctrl.in_use(1);
         break;
       case CHAN_STATUS:
         assert(size == sizeof(uint64_t));
-        pkt->set<uint64_t>(cr.status() | ~busy);
+        pkt->setLE<uint64_t>(cr.status() | (busy ? 0 : 1));
         break;
       case CHAN_CHAINADDR:
         assert(size == sizeof(uint64_t) || size == sizeof(uint32_t));
         if (size == sizeof(uint64_t))
-            pkt->set<uint64_t>(cr.descChainAddr);
+            pkt->setLE<uint64_t>(cr.descChainAddr);
         else
-            pkt->set<uint32_t>(bits(cr.descChainAddr,0,31));
+            pkt->setLE<uint32_t>(bits(cr.descChainAddr,0,31));
         break;
       case CHAN_CHAINADDR_HIGH:
         assert(size == sizeof(uint32_t));
-        pkt->set<uint32_t>(bits(cr.descChainAddr,32,63));
+        pkt->setLE<uint32_t>(bits(cr.descChainAddr,32,63));
         break;
       case CHAN_COMMAND:
         assert(size == sizeof(uint8_t));
-        pkt->set<uint32_t>(cr.command());
+        pkt->setLE<uint32_t>(cr.command());
         break;
       case CHAN_CMPLNADDR:
         assert(size == sizeof(uint64_t) || size == sizeof(uint32_t));
         if (size == sizeof(uint64_t))
-            pkt->set<uint64_t>(cr.completionAddr);
+            pkt->setLE<uint64_t>(cr.completionAddr);
         else
-            pkt->set<uint32_t>(bits(cr.completionAddr,0,31));
+            pkt->setLE<uint32_t>(bits(cr.completionAddr,0,31));
         break;
       case CHAN_CMPLNADDR_HIGH:
         assert(size == sizeof(uint32_t));
-        pkt->set<uint32_t>(bits(cr.completionAddr,32,63));
+        pkt->setLE<uint32_t>(bits(cr.completionAddr,32,63));
         break;
       case CHAN_ERROR:
         assert(size == sizeof(uint32_t));
-        pkt->set<uint32_t>(cr.error());
+        pkt->setLE<uint32_t>(cr.error());
         break;
       default:
         panic("Read request to unknown channel register number: (%d)%#x\n",
@@ -306,17 +310,21 @@ CopyEngine::write(PacketPtr pkt)
     ///
 
     if (size == sizeof(uint64_t)) {
-        uint64_t val M5_VAR_USED = pkt->get<uint64_t>();
-        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n", daddr, val);
+        [[maybe_unused]] uint64_t val = pkt->getLE<uint64_t>();
+        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n",
+                daddr, val);
     } else if (size == sizeof(uint32_t)) {
-        uint32_t val M5_VAR_USED = pkt->get<uint32_t>();
-        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n", daddr, val);
+        [[maybe_unused]] uint32_t val = pkt->getLE<uint32_t>();
+        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n",
+                daddr, val);
     } else if (size == sizeof(uint16_t)) {
-        uint16_t val M5_VAR_USED = pkt->get<uint16_t>();
-        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n", daddr, val);
+        [[maybe_unused]] uint16_t val = pkt->getLE<uint16_t>();
+        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n",
+                daddr, val);
     } else if (size == sizeof(uint8_t)) {
-        uint8_t val M5_VAR_USED = pkt->get<uint8_t>();
-        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n", daddr, val);
+        [[maybe_unused]] uint8_t val = pkt->getLE<uint8_t>();
+        DPRINTF(DMACopyEngine, "Wrote device register %#X value %#X\n",
+                daddr, val);
     } else {
         panic("Unknown size for MMIO access: %d\n", size);
     }
@@ -330,7 +338,7 @@ CopyEngine::write(PacketPtr pkt)
                     daddr);
             break;
           case GEN_INTRCTRL:
-            regs.intrctrl.master_int_enable(bits(pkt->get<uint8_t>(),0,1));
+            regs.intrctrl.master_int_enable(bits(pkt->getLE<uint8_t>(), 0, 1));
             break;
           default:
             panic("Read request to unknown register number: %#x\n", daddr);
@@ -368,7 +376,7 @@ CopyEngine::CopyEngineChannel::channelWrite(Packet *pkt, Addr daddr, int size)
         assert(size == sizeof(uint16_t));
         int old_int_disable;
         old_int_disable = cr.ctrl.interrupt_disable();
-        cr.ctrl(pkt->get<uint16_t>());
+        cr.ctrl(pkt->getLE<uint16_t>());
         if (cr.ctrl.interrupt_disable())
             cr.ctrl.interrupt_disable(0);
         else
@@ -382,39 +390,39 @@ CopyEngine::CopyEngineChannel::channelWrite(Packet *pkt, Addr daddr, int size)
       case CHAN_CHAINADDR:
         assert(size == sizeof(uint64_t) || size == sizeof(uint32_t));
         if (size == sizeof(uint64_t))
-            cr.descChainAddr = pkt->get<uint64_t>();
+            cr.descChainAddr = pkt->getLE<uint64_t>();
         else
-            cr.descChainAddr =  (uint64_t)pkt->get<uint32_t>() |
+            cr.descChainAddr =  (uint64_t)pkt->getLE<uint32_t>() |
                 (cr.descChainAddr & ~mask(32));
         DPRINTF(DMACopyEngine, "Chain Address %x\n", cr.descChainAddr);
         break;
       case CHAN_CHAINADDR_HIGH:
         assert(size == sizeof(uint32_t));
-        cr.descChainAddr =  ((uint64_t)pkt->get<uint32_t>() <<32) |
+        cr.descChainAddr =  ((uint64_t)pkt->getLE<uint32_t>() << 32) |
             (cr.descChainAddr & mask(32));
         DPRINTF(DMACopyEngine, "Chain Address %x\n", cr.descChainAddr);
         break;
       case CHAN_COMMAND:
         assert(size == sizeof(uint8_t));
-        cr.command(pkt->get<uint8_t>());
+        cr.command(pkt->getLE<uint8_t>());
         recvCommand();
         break;
       case CHAN_CMPLNADDR:
         assert(size == sizeof(uint64_t) || size == sizeof(uint32_t));
         if (size == sizeof(uint64_t))
-            cr.completionAddr = pkt->get<uint64_t>();
+            cr.completionAddr = pkt->getLE<uint64_t>();
         else
-            cr.completionAddr =  pkt->get<uint32_t>() |
+            cr.completionAddr =  pkt->getLE<uint32_t>() |
                 (cr.completionAddr & ~mask(32));
         break;
       case CHAN_CMPLNADDR_HIGH:
         assert(size == sizeof(uint32_t));
-        cr.completionAddr =  ((uint64_t)pkt->get<uint32_t>() <<32) |
+        cr.completionAddr =  ((uint64_t)pkt->getLE<uint32_t>() <<32) |
             (cr.completionAddr & mask(32));
         break;
       case CHAN_ERROR:
         assert(size == sizeof(uint32_t));
-        cr.error(~pkt->get<uint32_t>() & cr.error());
+        cr.error(~pkt->getLE<uint32_t>() & cr.error());
         break;
       default:
         panic("Read request to unknown channel register number: (%d)%#x\n",
@@ -422,31 +430,28 @@ CopyEngine::CopyEngineChannel::channelWrite(Packet *pkt, Addr daddr, int size)
     }
 }
 
-void
-CopyEngine::regStats()
+CopyEngine::
+CopyEngineStats::CopyEngineStats(statistics::Group *parent,
+                                 const uint8_t &channel_count)
+    : statistics::Group(parent, "CopyEngine"),
+      ADD_STAT(bytesCopied, statistics::units::Byte::get(),
+               "Number of bytes copied by each engine"),
+      ADD_STAT(copiesProcessed, statistics::units::Count::get(),
+               "Number of copies processed by each engine")
 {
-    PciDevice::regStats();
-
-    using namespace Stats;
     bytesCopied
-        .init(regs.chanCount)
-        .name(name() + ".bytes_copied")
-        .desc("Number of bytes copied by each engine")
-        .flags(total)
+        .init(channel_count)
+        .flags(statistics::total)
         ;
     copiesProcessed
-        .init(regs.chanCount)
-        .name(name() + ".copies_processed")
-        .desc("Number of copies processed by each engine")
-        .flags(total)
+        .init(channel_count)
+        .flags(statistics::total)
         ;
 }
 
 void
 CopyEngine::CopyEngineChannel::fetchDescriptor(Addr address)
 {
-    anDq();
-    anBegin("FetchDescriptor");
     DPRINTF(DMACopyEngine, "Reading descriptor from at memory location %#x(%#x)\n",
            address, ce->pciToDma(address));
     assert(address);
@@ -475,8 +480,6 @@ CopyEngine::CopyEngineChannel::fetchDescComplete()
             if (inDrain()) return;
             writeCompletionStatus();
         } else {
-            anBegin("Idle");
-            anWait();
             busy = false;
             nextState = Idle;
             inDrain();
@@ -495,7 +498,6 @@ CopyEngine::CopyEngineChannel::fetchDescComplete()
 void
 CopyEngine::CopyEngineChannel::readCopyBytes()
 {
-    anBegin("ReadCopyBytes");
     DPRINTF(DMACopyEngine, "Reading %d bytes from buffer to memory location %#x(%#x)\n",
            curDmaDesc->len, curDmaDesc->dest,
            ce->pciToDma(curDmaDesc->src));
@@ -516,7 +518,6 @@ CopyEngine::CopyEngineChannel::readCopyBytesComplete()
 void
 CopyEngine::CopyEngineChannel::writeCopyBytes()
 {
-    anBegin("WriteCopyBytes");
     DPRINTF(DMACopyEngine, "Writing %d bytes from buffer to memory location %#x(%#x)\n",
            curDmaDesc->len, curDmaDesc->dest,
            ce->pciToDma(curDmaDesc->dest));
@@ -524,8 +525,8 @@ CopyEngine::CopyEngineChannel::writeCopyBytes()
     cePort.dmaAction(MemCmd::WriteReq, ce->pciToDma(curDmaDesc->dest),
                      curDmaDesc->len, &writeCompleteEvent, copyBuffer, 0);
 
-    ce->bytesCopied[channelId] += curDmaDesc->len;
-    ce->copiesProcessed[channelId]++;
+    ce->copyEngineStats.bytesCopied[channelId] += curDmaDesc->len;
+    ce->copyEngineStats.copiesProcessed[channelId]++;
 }
 
 void
@@ -537,8 +538,6 @@ CopyEngine::CopyEngineChannel::writeCopyBytesComplete()
     cr.status.compl_desc_addr(lastDescriptorAddr >> 6);
     completionDataReg = cr.status() | 1;
 
-    anQ("DMAUsedDescQ", channelId, 1);
-    anQ("AppRecvQ", curDmaDesc->user1, curDmaDesc->len);
     if (curDmaDesc->command & DESC_CTRL_CP_STS) {
         nextState = CompletionWrite;
         if (inDrain()) return;
@@ -555,8 +554,6 @@ CopyEngine::CopyEngineChannel::continueProcessing()
     busy = false;
 
     if (underReset) {
-        anBegin("Reset");
-        anWait();
         underReset = false;
         refreshNext = false;
         busy = false;
@@ -577,15 +574,12 @@ CopyEngine::CopyEngineChannel::continueProcessing()
     } else {
         inDrain();
         nextState = Idle;
-        anWait();
-        anBegin("Idle");
     }
 }
 
 void
 CopyEngine::CopyEngineChannel::writeCompletionStatus()
 {
-    anBegin("WriteCompletionStatus");
     DPRINTF(DMACopyEngine, "Writing completion status %#x to address %#x(%#x)\n",
             completionDataReg, cr.completionAddr,
             ce->pciToDma(cr.completionAddr));
@@ -606,7 +600,6 @@ CopyEngine::CopyEngineChannel::writeStatusComplete()
 void
 CopyEngine::CopyEngineChannel::fetchNextAddr(Addr address)
 {
-    anBegin("FetchNextAddr");
     DPRINTF(DMACopyEngine, "Fetching next address...\n");
     busy = true;
     cePort.dmaAction(MemCmd::ReadReq,
@@ -624,8 +617,6 @@ CopyEngine::CopyEngineChannel::fetchAddrComplete()
         DPRINTF(DMACopyEngine, "Got NULL descriptor, nothing more to do\n");
         busy = false;
         nextState = Idle;
-        anWait();
-        anBegin("Idle");
         inDrain();
         return;
     }
@@ -688,7 +679,7 @@ CopyEngine::CopyEngineChannel::serialize(CheckpointOut &cp) const
     int nextState = this->nextState;
     SERIALIZE_SCALAR(nextState);
     arrayParamOut(cp, "curDmaDesc", (uint8_t*)curDmaDesc, sizeof(DmaDesc));
-    SERIALIZE_ARRAY(copyBuffer, ce->params()->XferCap);
+    SERIALIZE_ARRAY(copyBuffer, ce->params().XferCap);
     cr.serialize(cp);
 
 }
@@ -706,7 +697,7 @@ CopyEngine::CopyEngineChannel::unserialize(CheckpointIn &cp)
     UNSERIALIZE_SCALAR(nextState);
     this->nextState = (ChannelState)nextState;
     arrayParamIn(cp, "curDmaDesc", (uint8_t*)curDmaDesc, sizeof(DmaDesc));
-    UNSERIALIZE_ARRAY(copyBuffer, ce->params()->XferCap);
+    UNSERIALIZE_ARRAY(copyBuffer, ce->params().XferCap);
     cr.unserialize(cp);
 
 }
@@ -744,8 +735,4 @@ CopyEngine::CopyEngineChannel::drainResume()
     restartStateMachine();
 }
 
-CopyEngine *
-CopyEngineParams::create()
-{
-    return new CopyEngine(this);
-}
+} // namespace gem5

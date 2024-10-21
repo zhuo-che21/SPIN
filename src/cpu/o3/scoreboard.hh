@@ -25,33 +25,31 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Korey Sewell
- *          Kevin Lim
- *          Steve Reinhardt
  */
 
 #ifndef __CPU_O3_SCOREBOARD_HH__
 #define __CPU_O3_SCOREBOARD_HH__
 
-#include <iostream>
-#include <utility>
+#include <cassert>
 #include <vector>
 
+#include "base/compiler.hh"
+#include "base/logging.hh"
 #include "base/trace.hh"
-#include "config/the_isa.hh"
-#include "cpu/o3/comm.hh"
+#include "cpu/reg_class.hh"
 #include "debug/Scoreboard.hh"
+
+namespace gem5
+{
+
+namespace o3
+{
 
 /**
  * Implements a simple scoreboard to track which registers are
  * ready. This class operates on the unified physical register space,
- * so integer and floating-point registers are not distinguished.  For
- * convenience, it also accepts operations on the physical-space
- * mapping of misc registers, which are numbered starting after the
- * end of the actual physical register file.  However, there is no
- * actual scoreboard for misc registers, and they are always
- * considered ready.
+ * because the different classes of registers do not need to be distinguished.
+ * Registers being part of a fixed mapping are always considered ready.
  */
 class Scoreboard
 {
@@ -65,40 +63,14 @@ class Scoreboard
     std::vector<bool> regScoreBoard;
 
     /** The number of actual physical registers */
-    unsigned numPhysRegs;
-
-    /**
-     * The total number of registers which can be indexed, including
-     * the misc registers that come after the physical registers and
-     * which are hardwired to be always considered ready.
-     */
-    unsigned M5_CLASS_VAR_USED numTotalRegs;
-
-    /** The index of the zero register. */
-    PhysRegIndex zeroRegIdx;
-
-    /** The index of the FP zero register. */
-    PhysRegIndex fpZeroRegIdx;
-
-    bool isZeroReg(PhysRegIndex idx) const
-    {
-        return (idx == zeroRegIdx ||
-                (THE_ISA == ALPHA_ISA && idx == fpZeroRegIdx));
-    }
+    GEM5_CLASS_VAR_USED unsigned numPhysRegs;
 
   public:
     /** Constructs a scoreboard.
      *  @param _numPhysicalRegs Number of physical registers.
      *  @param _numMiscRegs Number of miscellaneous registers.
-     *  @param _zeroRegIdx Index of the zero register.
-     *  @param _fpZeroRegIdx Index of the FP zero register (if any, currently
-     *                       used only for Alpha).
      */
-    Scoreboard(const std::string &_my_name,
-               unsigned _numPhysicalRegs,
-               unsigned _numMiscRegs,
-               PhysRegIndex _zeroRegIdx,
-               PhysRegIndex _fpZeroRegIdx);
+    Scoreboard(const std::string &_my_name, unsigned _numPhysicalRegs);
 
     /** Destructor. */
     ~Scoreboard() {}
@@ -107,56 +79,55 @@ class Scoreboard
     std::string name() const { return _name; };
 
     /** Checks if the register is ready. */
-    bool getReg(PhysRegIndex reg_idx) const
+    bool
+    getReg(PhysRegIdPtr phys_reg) const
     {
-        assert(reg_idx < numTotalRegs);
-
-        if (reg_idx >= numPhysRegs) {
-            // misc regs are always ready
+        if (phys_reg->isFixedMapping()) {
+            // Fixed mapping regs are always ready
             return true;
         }
 
-        bool ready = regScoreBoard[reg_idx];
+        assert(phys_reg->flatIndex() < numPhysRegs);
 
-        if (isZeroReg(reg_idx))
-            assert(ready);
-
-        return ready;
+        return regScoreBoard[phys_reg->flatIndex()];
     }
 
     /** Sets the register as ready. */
-    void setReg(PhysRegIndex reg_idx)
+    void
+    setReg(PhysRegIdPtr phys_reg)
     {
-        assert(reg_idx < numTotalRegs);
-
-        if (reg_idx >= numPhysRegs) {
-            // misc regs are always ready, ignore attempts to change that
+        if (phys_reg->isFixedMapping()) {
+            // Fixed mapping regs are always ready, ignore attempts to change
+            // that
             return;
         }
 
-        DPRINTF(Scoreboard, "Setting reg %i as ready\n", reg_idx);
+        assert(phys_reg->flatIndex() < numPhysRegs);
 
-        assert(reg_idx < numTotalRegs);
-        regScoreBoard[reg_idx] = true;
+        DPRINTF(Scoreboard, "Setting reg %i (%s) as ready\n",
+                phys_reg->index(), phys_reg->className());
+
+        regScoreBoard[phys_reg->flatIndex()] = true;
     }
 
     /** Sets the register as not ready. */
-    void unsetReg(PhysRegIndex reg_idx)
+    void
+    unsetReg(PhysRegIdPtr phys_reg)
     {
-        assert(reg_idx < numTotalRegs);
-
-        if (reg_idx >= numPhysRegs) {
-            // misc regs are always ready, ignore attempts to change that
+        if (phys_reg->isFixedMapping()) {
+            // Fixed mapping regs are always ready, ignore attempts to
+            // change that
             return;
         }
 
-        // zero reg should never be marked unready
-        if (isZeroReg(reg_idx))
-            return;
+        assert(phys_reg->flatIndex() < numPhysRegs);
 
-        regScoreBoard[reg_idx] = false;
+        regScoreBoard[phys_reg->flatIndex()] = false;
     }
 
 };
+
+} // namespace o3
+} // namespace gem5
 
 #endif

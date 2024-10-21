@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2016 ARM Limited
+ * Copyright (c) 2015-2017, 2021-2022 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -33,8 +33,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Andreas Sandberg
  */
 
 #ifndef __ARCH_ARM_KVM_GIC_HH__
@@ -43,8 +41,15 @@
 #include "arch/arm/system.hh"
 #include "cpu/kvm/device.hh"
 #include "cpu/kvm/vm.hh"
-#include "dev/arm/base_gic.hh"
+#include "dev/arm/gic_v2.hh"
+#include "dev/arm/gic_v3.hh"
 #include "dev/platform.hh"
+
+#include "params/MuxingKvmGicV2.hh"
+#include "params/MuxingKvmGicV3.hh"
+
+namespace gem5
+{
 
 /**
  * KVM in-kernel GIC abstraction
@@ -53,7 +58,7 @@
  * model. It exposes an API that is similar to that of
  * software-emulated GIC models in gem5.
  */
-class KvmKernelGicV2
+class KvmKernelGic
 {
   public:
     /**
@@ -65,16 +70,17 @@ class KvmKernelGicV2
      * @param vm KVM VM representing this system
      * @param cpu_addr GIC CPU interface base address
      * @param dist_addr GIC distributor base address
-     * @param it_liens Number of interrupt lines to support
+     * @param it_lines Number of interrupt lines to support
      */
-    KvmKernelGicV2(KvmVM &vm, Addr cpu_addr, Addr dist_addr,
-                   unsigned it_lines);
-    virtual ~KvmKernelGicV2();
+    KvmKernelGic(KvmVM &vm, uint32_t dev, unsigned it_lines);
+    virtual ~KvmKernelGic();
 
-    KvmKernelGicV2(const KvmKernelGicV2 &other) = delete;
-    KvmKernelGicV2(const KvmKernelGicV2 &&other) = delete;
-    KvmKernelGicV2 &operator=(const KvmKernelGicV2 &&rhs) = delete;
-    KvmKernelGicV2 &operator=(const KvmKernelGicV2 &rhs) = delete;
+    KvmKernelGic(const KvmKernelGic &other) = delete;
+    KvmKernelGic(const KvmKernelGic &&other) = delete;
+    KvmKernelGic &operator=(const KvmKernelGic &&rhs) = delete;
+    KvmKernelGic &operator=(const KvmKernelGic &rhs) = delete;
+
+    virtual void init() {}
 
   public:
     /**
@@ -111,11 +117,6 @@ class KvmKernelGicV2
      */
     void clearPPI(unsigned vcpu, unsigned ppi);
 
-    /** Address range for the CPU interfaces */
-    const AddrRange cpuRange;
-    /** Address range for the distributor interface */
-    const AddrRange distRange;
-
     /* @} */
 
   protected:
@@ -136,73 +137,174 @@ class KvmKernelGicV2
     KvmDevice kdev;
 };
 
-struct KvmGicParams;
-
-/**
- * In-kernel GIC model.
- *
- * When using a KVM-based CPU model, it is possible to offload GIC
- * emulation to the kernel. This reduces some overheads when the guest
- * accesses the GIC and makes it possible to use in-kernel
- * architected/generic timer emulation.
- *
- * This device uses interfaces with the kernel GicV2 model that is
- * documented in Documentation/virtual/kvm/devices/arm-vgic.txt in the
- * Linux kernel sources.
- *
- * This GIC model has the following known limitations:
- * <ul>
- *   <li>Checkpointing is not supported.
- *   <li>This model only works with kvm. Simulated CPUs are not
- *       supported since this would require the kernel to inject
- *       interrupt into the simulated CPU.
- * </ul>
- *
- * @warn This GIC model cannot be used with simulated CPUs!
- */
-class KvmGic : public BaseGic
+class KvmKernelGicV2 : public KvmKernelGic, public GicV2Registers
 {
+  public:
+    /**
+     * Instantiate a KVM in-kernel GICv2 model.
+     *
+     * This constructor instantiates an in-kernel GICv2 model and wires
+     * it up to the virtual memory system.
+     *
+     * @param vm KVM VM representing this system
+     * @param params MuxingKvmGicV2 params
+     */
+    KvmKernelGicV2(KvmVM &vm,
+                   const MuxingKvmGicV2Params &params);
+
+  public: // GicV2Registers
+    uint32_t readDistributor(ContextID ctx, Addr daddr) override;
+    uint32_t readCpu(ContextID ctx, Addr daddr) override;
+
+    void writeDistributor(ContextID ctx, Addr daddr,
+                          uint32_t data) override;
+    void writeCpu(ContextID ctx, Addr daddr, uint32_t data) override;
+
+  protected:
+    /**
+     * Get value of GIC register "from" a cpu
+     *
+     * @param group Distributor or CPU (KVM_DEV_ARM_VGIC_GRP_{DIST,CPU}_REGS)
+     * @param vcpu CPU id within KVM
+     * @param offset register offset
+     */
+    uint32_t getGicReg(unsigned group, unsigned vcpu, unsigned offset);
+
+    /**
+     * Set value of GIC register "from" a cpu
+     *
+     * @param group Distributor or CPU (KVM_DEV_ARM_VGIC_GRP_{DIST,CPU}_REGS)
+     * @param vcpu CPU id within KVM
+     * @param offset register offset
+     * @param value value to set register to
+     */
+    void setGicReg(unsigned group, unsigned vcpu, unsigned offset,
+                   unsigned value);
+
+  private:
+    /** Address range for the CPU interfaces */
+    const AddrRange cpuRange;
+    /** Address range for the distributor */
+    const AddrRange distRange;
+};
+
+class KvmKernelGicV3 : public KvmKernelGic, public Gicv3Registers
+{
+  public:
+    /**
+     * Instantiate a KVM in-kernel GICv3 model.
+     *
+     * This constructor instantiates an in-kernel GICv3 model and wires
+     * it up to the virtual memory system.
+     *
+     * @param vm KVM VM representing this system
+     * @param params MuxingKvmGicV3 parameters
+     */
+    KvmKernelGicV3(KvmVM &vm,
+                   const MuxingKvmGicV3Params &params);
+
+    void init() override;
+
+  public: // Gicv3Registers
+    uint32_t readDistributor(Addr daddr) override;
+    uint32_t readRedistributor(const ArmISA::Affinity &aff,
+                               Addr daddr) override;
+    RegVal readCpu(const ArmISA::Affinity &aff,
+                   ArmISA::MiscRegIndex misc_reg) override;
+
+    void writeDistributor(Addr daddr, uint32_t data) override;
+    void writeRedistributor(const ArmISA::Affinity &aff,
+                            Addr daddr, uint32_t data) override;
+    void writeCpu(const ArmISA::Affinity &aff,
+                  ArmISA::MiscRegIndex misc_reg, RegVal data) override;
+
+  protected:
+    /**
+     * Get value of GIC register "from" a cpu
+     *
+     * @param group Distributor or CPU (KVM_DEV_ARM_VGIC_GRP_{DIST,CPU}_REGS)
+     * @param mpidr CPU affinity numbers
+     * @param offset register offset
+     */
+    template <typename Ret>
+    Ret getGicReg(unsigned group, unsigned mpidr, unsigned offset);
+
+    /**
+     * Set value of GIC register "from" a cpu
+     *
+     * @param group Distributor or CPU (KVM_DEV_ARM_VGIC_GRP_{DIST,CPU}_REGS)
+     * @param mpidr CPU affinity numbers
+     * @param offset register offset
+     * @param value value to set register to
+     */
+    template <typename Arg>
+    void setGicReg(unsigned group, unsigned mpidr, unsigned offset,
+                   Arg value);
+
+  private:
+    /** Address range for the redistributor */
+    const AddrRange redistRange;
+    /** Address range for the distributor */
+    const AddrRange distRange;
+};
+
+struct GicV2Types
+{
+    using SimGic = GicV2;
+    using KvmGic = KvmKernelGicV2;
+    using Params = MuxingKvmGicV2Params;
+};
+
+struct GicV3Types
+{
+    using SimGic = Gicv3;
+    using KvmGic = KvmKernelGicV3;
+    using Params = MuxingKvmGicV3Params;
+};
+
+template <class Types>
+class MuxingKvmGic : public Types::SimGic
+{
+    using SimGic = typename Types::SimGic;
+    using KvmGic = typename Types::KvmGic;
+    using Params = typename Types::Params;
+
   public: // SimObject / Serializable / Drainable
-    KvmGic(const KvmGicParams *p);
-    ~KvmGic();
+    MuxingKvmGic(const Params &p);
 
-    void startup() override { verifyMemoryMode(); }
-    void drainResume() override { verifyMemoryMode(); }
-
-    void serialize(CheckpointOut &cp) const override;
-    void unserialize(CheckpointIn &cp) override;
+    void startup() override;
+    DrainState drain() override;
+    void drainResume() override;
 
   public: // PioDevice
-    AddrRangeList getAddrRanges() const { return addrRanges; }
     Tick read(PacketPtr pkt) override;
     Tick write(PacketPtr pkt) override;
 
-  public: // BaseGic
+  public: // GicV2
     void sendInt(uint32_t num) override;
     void clearInt(uint32_t num) override;
 
     void sendPPInt(uint32_t num, uint32_t cpu) override;
     void clearPPInt(uint32_t num, uint32_t cpu) override;
 
-  protected:
-    /**
-     * Do memory mode sanity checks
-     *
-     * This method only really exists to warn users that try to switch
-     * to a simulate CPU. There is no fool proof method to detect
-     * simulated CPUs, but checking that we're in atomic mode and
-     * bypassing caches should be robust enough.
-     */
-    void verifyMemoryMode() const;
+  protected: // BaseGic
+    bool blockIntUpdate() const override;
 
+  protected:
     /** System this interrupt controller belongs to */
     System &system;
 
     /** Kernel GIC device */
-    KvmKernelGicV2 kernelGic;
+    KvmKernelGic *kernelGic;
 
-    /** Union of all memory  */
-    const AddrRangeList addrRanges;
+  private:
+    bool usingKvm;
+
+    /** Multiplexing implementation */
+    void fromGicToKvm();
+    void fromKvmToGic();
 };
+
+} // namespace gem5
 
 #endif // __ARCH_ARM_KVM_GIC_HH__

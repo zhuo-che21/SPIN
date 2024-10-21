@@ -1,4 +1,4 @@
-# Copyright (c) 2015 ARM Limited
+# Copyright (c) 2015, 2021 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -32,22 +32,17 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: David Guillen Fandos
 
-from m5.SimObject import SimObject
+from m5.SimObject import *
 from m5.params import *
 
 # Represents a group of simobj which produce heat
 class ThermalDomain(SimObject):
-    type = 'ThermalDomain'
+    type = "ThermalDomain"
     cxx_header = "sim/power/thermal_domain.hh"
+    cxx_class = "gem5::ThermalDomain"
 
-    @classmethod
-    def export_methods(cls, code):
-        code('''
-      void setNode(ThermalNode * node);
-''')
+    cxx_exports = [PyBindMethod("setNode")]
 
     # Static temperature which may change over time
-    initial_temperature = Param.Float(25.0, "Initial temperature")
+    initial_temperature = Param.Temperature("25.0C", "Initial temperature")

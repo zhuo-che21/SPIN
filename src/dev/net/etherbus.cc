@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 /* @file
@@ -38,6 +36,7 @@
 #include <string>
 #include <vector>
 
+#include "base/logging.hh"
 #include "base/trace.hh"
 #include "debug/Ethernet.hh"
 #include "debug/EthernetData.hh"
@@ -45,13 +44,15 @@
 #include "dev/net/etherint.hh"
 #include "dev/net/etherpkt.hh"
 #include "params/EtherBus.hh"
-#include "sim/core.hh"
+#include "sim/cur_tick.hh"
 
-using namespace std;
+namespace gem5
+{
 
-EtherBus::EtherBus(const Params *p)
-    : EtherObject(p), ticksPerByte(p->speed), loopback(p->loopback),
-      event(this), sender(0), dump(p->dump)
+EtherBus::EtherBus(const Params &p)
+    : SimObject(p), ticksPerByte(p.speed), loopback(p.loopback),
+      event([this]{ txDone(); }, "ethernet bus completion"),
+      sender(0), dump(p.dump)
 {
 }
 
@@ -79,8 +80,8 @@ EtherBus::txDone()
     packet = 0;
 }
 
-EtherInt*
-EtherBus::getEthPort(const std::string &if_name, int idx)
+Port &
+EtherBus::getPort(const std::string &if_name, PortID idx)
 {
     panic("Etherbus doesn't work\n");
 }
@@ -106,8 +107,4 @@ EtherBus::send(EtherInt *sndr, EthPacketPtr &pkt)
     return true;
 }
 
-EtherBus *
-EtherBusParams::create()
-{
-    return new EtherBus(this);
-}
+} // namespace gem5

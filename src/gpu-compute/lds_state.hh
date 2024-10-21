@@ -2,8 +2,6 @@
  * Copyright (c) 2014-2015 Advanced Micro Devices, Inc.
  * All rights reserved.
  *
- * For use for simulation and test purposes only
- *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *
@@ -14,9 +12,9 @@
  * this list of conditions and the following disclaimer in the documentation
  * and/or other materials provided with the distribution.
  *
- * 3. Neither the name of the copyright holder nor the names of its contributors
- * may be used to endorse or promote products derived from this software
- * without specific prior written permission.
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from this
+ * software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -29,8 +27,6 @@
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * Author: John Kalamatianos, Joe Gross
  */
 
 #ifndef __LDS_STATE_HH__
@@ -43,17 +39,19 @@
 #include <utility>
 #include <vector>
 
-#include "enums/MemType.hh"
 #include "gpu-compute/misc.hh"
-#include "mem/mem_object.hh"
 #include "mem/port.hh"
 #include "params/LdsState.hh"
+#include "sim/clocked_object.hh"
+
+namespace gem5
+{
 
 class ComputeUnit;
 
 /**
- * this represents a slice of the overall LDS, intended to be associated with an
- * individual workgroup
+ * this represents a slice of the overall LDS, intended to be associated with
+ * an individual workgroup
  */
 class LdsChunk
 {
@@ -72,8 +70,14 @@ class LdsChunk
     T
     read(const uint32_t index)
     {
-        fatal_if(!chunk.size(), "cannot read from an LDS chunk of size 0");
-        fatal_if(index >= chunk.size(), "out-of-bounds access to an LDS chunk");
+        /**
+         * For reads that are outside the bounds of the LDS
+         * chunk allocated to this WG we return 0.
+         */
+        if (index >= chunk.size()) {
+            return (T)0;
+        }
+
         T *p0 = (T *) (&(chunk.at(index)));
         return *p0;
     }
@@ -85,10 +89,37 @@ class LdsChunk
     void
     write(const uint32_t index, const T value)
     {
-        fatal_if(!chunk.size(), "cannot write to an LDS chunk of size 0");
-        fatal_if(index >= chunk.size(), "out-of-bounds access to an LDS chunk");
+        /**
+         * Writes that are outside the bounds of the LDS
+         * chunk allocated to this WG are dropped.
+         */
+        if (index >= chunk.size()) {
+            return;
+        }
+
         T *p0 = (T *) (&(chunk.at(index)));
         *p0 = value;
+    }
+
+    /**
+     * an atomic operation
+     */
+    template<class T>
+    T
+    atomic(const uint32_t index, AtomicOpFunctorPtr amoOp)
+    {
+        /**
+         * Atomics that are outside the bounds of the LDS
+         * chunk allocated to this WG are dropped.
+         */
+        if (index >= chunk.size()) {
+            return (T)0;
+        }
+        T *p0 = (T *) (&(chunk.at(index)));
+        T tmp = *p0;
+
+       (*amoOp)((uint8_t *)p0);
+        return tmp;
     }
 
     /**
@@ -107,7 +138,7 @@ class LdsChunk
 
 // Local Data Share (LDS) State per Wavefront (contents of the LDS region
 // allocated to the WorkGroup of this Wavefront)
-class LdsState: public MemObject
+class LdsState: public ClockedObject
 {
   protected:
 
@@ -148,11 +179,11 @@ class LdsState: public MemObject
     /**
      * CuSidePort is the LDS Port closer to the CU side
      */
-    class CuSidePort: public SlavePort
+    class CuSidePort: public ResponsePort
     {
       public:
         CuSidePort(const std::string &_name, LdsState *_ownerLds) :
-                SlavePort(_name, _ownerLds), ownerLds(_ownerLds)
+                ResponsePort(_name), ownerLds(_ownerLds)
         {
         }
 
@@ -205,14 +236,16 @@ class LdsState: public MemObject
 
   protected:
 
-    // the lds reference counter
-    // The key is the workgroup ID and dispatch ID
-    // The value is the number of wavefronts that reference this LDS, as
-    // wavefronts are launched, the counter goes up for that workgroup and when
-    // they return it decreases, once it reaches 0 then this chunk of the LDS is
-    // returned to the available pool. However,it is deallocated on the 1->0
-    // transition, not whenever the counter is 0 as it always starts with 0 when
-    // the workgroup asks for space
+    /**
+     * the lds reference counter
+     * The key is the workgroup ID and dispatch ID
+     * The value is the number of wavefronts that reference this LDS, as
+     * wavefronts are launched, the counter goes up for that workgroup and when
+     * they return it decreases, once it reaches 0 then this chunk of the LDS
+     * is returned to the available pool. However,it is deallocated on the 1->0
+     * transition, not whenever the counter is 0 as it always starts with 0
+     * when the workgroup asks for space
+     */
     std::unordered_map<uint32_t,
                        std::unordered_map<uint32_t, int32_t>> refCounter;
 
@@ -248,9 +281,9 @@ class LdsState: public MemObject
                        unsigned *numBankAccesses);
 
   public:
-    typedef LdsStateParams Params;
+    using Params = LdsStateParams;
 
-    LdsState(const Params *params);
+    LdsState(const Params &params);
 
     // prevent copy construction
     LdsState(const LdsState&) = delete;
@@ -258,12 +291,6 @@ class LdsState: public MemObject
     ~LdsState()
     {
         parent = nullptr;
-    }
-
-    const Params *
-    params() const
-    {
-        return dynamic_cast<const Params *>(_params);
     }
 
     bool
@@ -358,22 +385,41 @@ class LdsState: public MemObject
             const uint32_t size)
     {
         if (chunkMap.find(dispatchId) != chunkMap.end()) {
-            fatal_if(
+            panic_if(
                 chunkMap[dispatchId].find(wgId) != chunkMap[dispatchId].end(),
                 "duplicate workgroup ID asking for space in the LDS "
                 "did[%d] wgid[%d]", dispatchId, wgId);
         }
 
-        fatal_if(bytesAllocated + size > maximumSize,
-                 "request would ask for more space than is available");
+        if (bytesAllocated + size > maximumSize) {
+            return nullptr;
+        } else {
+            bytesAllocated += size;
 
-        bytesAllocated += size;
+            auto value = chunkMap[dispatchId].emplace(wgId, LdsChunk(size));
+            panic_if(!value.second, "was unable to allocate a new chunkMap");
 
-        chunkMap[dispatchId].emplace(wgId, LdsChunk(size));
-        // make an entry for this workgroup
-        refCounter[dispatchId][wgId] = 0;
+            // make an entry for this workgroup
+            refCounter[dispatchId][wgId] = 0;
 
-        return &chunkMap[dispatchId][wgId];
+            return &chunkMap[dispatchId][wgId];
+        }
+    }
+
+    /*
+     * return pointer to lds chunk for wgid
+     */
+    LdsChunk *
+    getLdsChunk(const uint32_t dispatchId, const uint32_t wgId)
+    {
+      fatal_if(chunkMap.find(dispatchId) == chunkMap.end(),
+          "fetch for unknown dispatch ID did[%d]", dispatchId);
+
+      fatal_if(chunkMap[dispatchId].find(wgId) == chunkMap[dispatchId].end(),
+          "fetch for unknown workgroup ID wgid[%d] in dispatch ID did[%d]",
+          wgId, dispatchId);
+
+      return &chunkMap[dispatchId][wgId];
     }
 
     bool
@@ -435,8 +481,8 @@ class LdsState: public MemObject
         return range;
     }
 
-    virtual BaseSlavePort &
-    getSlavePort(const std::string& if_name, PortID idx)
+    Port &
+    getPort(const std::string &if_name, PortID idx)
     {
         if (if_name == "cuPort") {
             // TODO need to set name dynamically at this point?
@@ -504,5 +550,7 @@ class LdsState: public MemObject
     // the number of banks in the LDS underlying data store
     int banks = 0;
 };
+
+} // namespace gem5
 
 #endif // __LDS_STATE_HH__

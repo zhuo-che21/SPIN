@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 ARM Limited
+ * Copyright (c) 2015, 2019, 2021 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -36,24 +36,23 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Erik Hallnor
- *          Steve Reinhardt
- *          Andreas Hansson
  */
 
+#include "cpu/testers/memtest/memtest.hh"
+
+#include "base/compiler.hh"
 #include "base/random.hh"
 #include "base/statistics.hh"
-#include "cpu/testers/memtest/memtest.hh"
+#include "base/trace.hh"
 #include "debug/MemTest.hh"
-#include "mem/mem_object.hh"
 #include "sim/sim_exit.hh"
 #include "sim/stats.hh"
 #include "sim/system.hh"
 
-using namespace std;
+namespace gem5
+{
 
-unsigned int TESTER_ALLOCATOR = 0;
+static unsigned int TESTER_ALLOCATOR = 0;
 
 bool
 MemTest::CpuPort::recvTimingResp(PacketPtr pkt)
@@ -82,35 +81,36 @@ MemTest::sendPkt(PacketPtr pkt) {
     return true;
 }
 
-MemTest::MemTest(const Params *p)
-    : MemObject(p),
-      tickEvent(this),
-      noRequestEvent(this),
-      noResponseEvent(this),
+MemTest::MemTest(const Params &p)
+    : ClockedObject(p),
+      tickEvent([this]{ tick(); }, name()),
+      noRequestEvent([this]{ noRequest(); }, name()),
+      noResponseEvent([this]{ noResponse(); }, name()),
       port("port", *this),
       retryPkt(nullptr),
-      size(p->size),
-      interval(p->interval),
-      percentReads(p->percent_reads),
-      percentFunctional(p->percent_functional),
-      percentUncacheable(p->percent_uncacheable),
-      masterId(p->system->getMasterId(name())),
-      blockSize(p->system->cacheLineSize()),
+      waitResponse(false),
+      size(p.size),
+      interval(p.interval),
+      percentReads(p.percent_reads),
+      percentFunctional(p.percent_functional),
+      percentUncacheable(p.percent_uncacheable),
+      requestorId(p.system->getRequestorId(this)),
+      blockSize(p.system->cacheLineSize()),
       blockAddrMask(blockSize - 1),
-      progressInterval(p->progress_interval),
-      progressCheck(p->progress_check),
-      nextProgressMessage(p->progress_interval),
-      maxLoads(p->max_loads),
-      atomic(p->system->isAtomicMode()),
-      suppressFuncWarnings(p->suppress_func_warnings)
+      sizeBlocks(size / blockSize),
+      baseAddr1(p.base_addr_1),
+      baseAddr2(p.base_addr_2),
+      uncacheAddr(p.uncacheable_base_addr),
+      progressInterval(p.progress_interval),
+      progressCheck(p.progress_check),
+      nextProgressMessage(p.progress_interval),
+      maxLoads(p.max_loads),
+      atomic(p.system->isAtomicMode()),
+      suppressFuncErrors(p.suppress_func_errors), stats(this)
 {
     id = TESTER_ALLOCATOR++;
     fatal_if(id >= blockSize, "Too many testers, only %d allowed\n",
              blockSize - 1);
-
-    baseAddr1 = 0x100000;
-    baseAddr2 = 0x400000;
-    uncacheAddr = 0x800000;
 
     // set up counters
     numReads = 0;
@@ -119,22 +119,21 @@ MemTest::MemTest(const Params *p)
     // kick things into action
     schedule(tickEvent, curTick());
     schedule(noRequestEvent, clockEdge(progressCheck));
-    schedule(noResponseEvent, clockEdge(progressCheck));
 }
 
-BaseMasterPort &
-MemTest::getMasterPort(const std::string &if_name, PortID idx)
+Port &
+MemTest::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name == "port")
         return port;
     else
-        return MemObject::getMasterPort(if_name, idx);
+        return ClockedObject::getPort(if_name, idx);
 }
 
 void
 MemTest::completeRequest(PacketPtr pkt, bool functional)
 {
-    Request *req = pkt->req;
+    const RequestPtr &req = pkt->req;
     assert(req->getSize() == 1);
 
     // this address is no longer outstanding
@@ -150,10 +149,9 @@ MemTest::completeRequest(PacketPtr pkt, bool functional)
     const uint8_t *pkt_data = pkt->getConstPtr<uint8_t>();
 
     if (pkt->isError()) {
-        if (!functional || !suppressFuncWarnings) {
-            warn("%s access failed at %#x\n",
-                 pkt->isWrite() ? "Write" : "Read", req->getPaddr());
-        }
+        if (!functional || !suppressFuncErrors)
+            panic( "%s access failed at %#x\n",
+                pkt->isWrite() ? "Write" : "Read", req->getPaddr());
     } else {
         if (pkt->isRead()) {
             uint8_t ref_data = referenceData[req->getPaddr()];
@@ -165,11 +163,12 @@ MemTest::completeRequest(PacketPtr pkt, bool functional)
             }
 
             numReads++;
-            numReadsStat++;
+            stats.numReads++;
 
             if (numReads == (uint64_t)nextProgressMessage) {
-                ccprintf(cerr, "%s: completed %d read, %d write accesses @%d\n",
-                         name(), numReads, numWrites, curTick());
+                ccprintf(std::cerr,
+                        "%s: completed %d read, %d write accesses @%d\n",
+                        name(), numReads, numWrites, curTick());
                 nextProgressMessage += progressInterval;
             }
 
@@ -181,42 +180,42 @@ MemTest::completeRequest(PacketPtr pkt, bool functional)
             // update the reference data
             referenceData[req->getPaddr()] = pkt_data[0];
             numWrites++;
-            numWritesStat++;
+            stats.numWrites++;
         }
     }
-
-    delete pkt->req;
 
     // the packet will delete the data
     delete pkt;
 
-    // finally shift the response timeout forward
-    reschedule(noResponseEvent, clockEdge(progressCheck), true);
+    // finally shift the response timeout forward if we are still
+    // expecting responses; deschedule it otherwise
+    if (outstandingAddrs.size() != 0)
+        reschedule(noResponseEvent, clockEdge(progressCheck));
+    else if (noResponseEvent.scheduled())
+        deschedule(noResponseEvent);
+
+    // schedule the next tick
+    if (waitResponse) {
+        waitResponse = false;
+        schedule(tickEvent, clockEdge(interval));
+    }
 }
-
-void
-MemTest::regStats()
+MemTest::MemTestStats::MemTestStats(statistics::Group *parent)
+      : statistics::Group(parent),
+      ADD_STAT(numReads, statistics::units::Count::get(),
+               "number of read accesses completed"),
+      ADD_STAT(numWrites, statistics::units::Count::get(),
+               "number of write accesses completed")
 {
-    MemObject::regStats();
 
-    using namespace Stats;
-
-    numReadsStat
-        .name(name() + ".num_reads")
-        .desc("number of read accesses completed")
-        ;
-
-    numWritesStat
-        .name(name() + ".num_writes")
-        .desc("number of write accesses completed")
-        ;
 }
 
 void
 MemTest::tick()
 {
-    // we should never tick if we are waiting for a retry
+    // we should never tick if we are waiting for a retry or response
     assert(!retryPkt);
+    assert(!waitResponse);
 
     // create a new request
     unsigned cmd = random_mt.random(0, 100);
@@ -225,6 +224,13 @@ MemTest::tick()
     unsigned base = random_mt.random(0, 1);
     Request::Flags flags;
     Addr paddr;
+
+    // halt until we clear outstanding requests, otherwise it won't be able to
+    // find a new unique address
+    if (outstandingAddrs.size() >= sizeBlocks) {
+        waitResponse = true;
+        return;
+    }
 
     // generate a unique address
     do {
@@ -244,7 +250,7 @@ MemTest::tick()
 
     bool do_functional = (random_mt.random(0, 100) < percentFunctional) &&
         !uncacheable;
-    Request *req = new Request(paddr, 1, flags, masterId);
+    RequestPtr req = std::make_shared<Request>(paddr, 1, flags, requestorId);
     req->setContext(id);
 
     outstandingAddrs.insert(paddr);
@@ -259,7 +265,7 @@ MemTest::tick()
     if (cmd < percentReads) {
         // start by ensuring there is a reference value if we have not
         // seen this address before
-        uint8_t M5_VAR_USED ref_data = 0;
+        [[maybe_unused]] uint8_t ref_data = 0;
         auto ref = referenceData.find(req->getPaddr());
         if (ref == referenceData.end()) {
             referenceData[req->getPaddr()] = 0;
@@ -304,6 +310,10 @@ MemTest::tick()
     } else {
         DPRINTF(MemTest, "Waiting for retry\n");
     }
+
+    // Schedule noResponseEvent now if we are expecting a response
+    if (!noResponseEvent.scheduled() && (outstandingAddrs.size() != 0))
+        schedule(noResponseEvent, clockEdge(progressCheck));
 }
 
 void
@@ -328,11 +338,8 @@ MemTest::recvRetry()
         retryPkt = nullptr;
         // kick things into action again
         schedule(tickEvent, clockEdge(interval));
+        reschedule(noRequestEvent, clockEdge(progressCheck), true);
     }
 }
 
-MemTest *
-MemTestParams::create()
-{
-    return new MemTest(this);
-}
+} // namespace gem5

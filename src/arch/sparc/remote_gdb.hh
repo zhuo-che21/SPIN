@@ -25,9 +25,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
- *          Boris Shingarov
  */
 
 #ifndef __ARCH_SPARC_REMOTE_GDB_HH__
@@ -36,6 +33,9 @@
 #include <map>
 
 #include "base/remote_gdb.hh"
+
+namespace gem5
+{
 
 class System;
 class ThreadContext;
@@ -52,7 +52,8 @@ class RemoteGDB : public BaseRemoteGDB
     {
       using BaseGdbRegCache::BaseGdbRegCache;
       private:
-        struct {
+        struct
+        {
             uint32_t gpr[32];
             uint32_t hole[32];
             uint32_t y;
@@ -69,14 +70,19 @@ class RemoteGDB : public BaseRemoteGDB
         size_t size() const { return sizeof(r); }
         void getRegs(ThreadContext*);
         void setRegs(ThreadContext*) const;
-        const std::string name() const { return gdb->name() + ".SPARCGdbRegCache"; }
+        const std::string
+        name() const
+        {
+            return gdb->name() + ".SPARCGdbRegCache";
+        }
     };
 
     class SPARC64GdbRegCache : public BaseGdbRegCache
     {
       using BaseGdbRegCache::BaseGdbRegCache;
       private:
-        struct {
+        struct
+        {
             uint64_t gpr[32];
             uint64_t fpr[32];
             uint64_t pc;
@@ -91,13 +97,21 @@ class RemoteGDB : public BaseRemoteGDB
         size_t size() const { return sizeof(r); }
         void getRegs(ThreadContext*);
         void setRegs(ThreadContext*) const;
-        const std::string name() const { return gdb->name() + ".SPARC64GdbRegCache"; }
+        const std::string
+        name() const
+        {
+            return gdb->name() + ".SPARC64GdbRegCache";
+        }
     };
 
+    SPARCGdbRegCache regCache32;
+    SPARC64GdbRegCache regCache64;
+
   public:
-    RemoteGDB(System *_system, ThreadContext *tc);
+    RemoteGDB(System *_system, ListenSocketConfig _listen_config);
     BaseGdbRegCache *gdbRegs();
 };
 } // namespace SparcISA
+} // namespace gem5
 
 #endif /* __ARCH_SPARC_REMOTE_GDB_H__ */

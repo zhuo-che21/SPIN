@@ -35,17 +35,22 @@
 
 #include "base/types.hh"
 
-const uint32_t ADDRESS_WIDTH = 64; // address width in bytes
+namespace gem5
+{
+
+namespace ruby
+{
 
 // selects bits inclusive
 Addr bitSelect(Addr addr, unsigned int small, unsigned int big);
-Addr bitRemove(Addr addr, unsigned int small, unsigned int big);
 Addr maskLowOrderBits(Addr addr, unsigned int number);
-Addr maskHighOrderBits(Addr addr, unsigned int number);
-Addr shiftLowOrderBits(Addr addr, unsigned int number);
 Addr getOffset(Addr addr);
 Addr makeLineAddress(Addr addr);
+Addr makeLineAddress(Addr addr, int cacheLineBits);
 Addr makeNextStrideAddress(Addr addr, int stride);
 std::string printAddress(Addr addr);
+
+} // namespace ruby
+} // namespace gem5
 
 #endif // __MEM_RUBY_COMMON_ADDRESS_HH__

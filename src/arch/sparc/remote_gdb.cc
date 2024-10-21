@@ -26,9 +26,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
- *          Boris Shingarov
  */
 
 /*
@@ -119,14 +116,17 @@
  * "Stub" to allow remote cpu to debug over a serial line using gdb.
  */
 
-#include <signal.h>
+#include "arch/sparc/remote_gdb.hh"
+
 #include <sys/signal.h>
 #include <unistd.h>
 
+#include <csignal>
 #include <string>
 
-#include "arch/sparc/remote_gdb.hh"
-#include "arch/vtophys.hh"
+#include "arch/sparc/regs/int.hh"
+#include "arch/sparc/regs/misc.hh"
+#include "arch/sparc/types.hh"
 #include "base/intmath.hh"
 #include "base/remote_gdb.hh"
 #include "base/socket.hh"
@@ -143,11 +143,14 @@
 #include "sim/process.hh"
 #include "sim/system.hh"
 
-using namespace std;
+namespace gem5
+{
+
 using namespace SparcISA;
 
-RemoteGDB::RemoteGDB(System *_system, ThreadContext *c)
-    : BaseRemoteGDB(_system, c)
+RemoteGDB::RemoteGDB(System *_system, ListenSocketConfig _listen_config)
+    : BaseRemoteGDB(_system, _listen_config),
+    regCache32(this), regCache64(this)
 {}
 
 ///////////////////////////////////////////////////////////
@@ -162,16 +165,11 @@ RemoteGDB::acc(Addr va, size_t len)
     // from va to va + len have valid page map entries. Not
     // sure how this will work for other OSes or in general.
     if (FullSystem) {
-        if (va)
-            return true;
-        return false;
+        return va != 0;
     } else {
-        TlbEntry entry;
         // Check to make sure the first byte is mapped into the processes
         // address space.
-        if (context->getProcessPtr()->pTable->lookup(va, entry))
-            return true;
-        return false;
+        return context()->getProcessPtr()->pTable->lookup(va) != nullptr;
     }
 }
 
@@ -179,41 +177,45 @@ void
 RemoteGDB::SPARCGdbRegCache::getRegs(ThreadContext *context)
 {
     DPRINTF(GDBAcc, "getRegs in remotegdb \n");
-    for (int i = 0; i < 32; i++) r.gpr[i] = htobe((uint32_t)context->readIntReg(i));
-    PCState pc = context->pcState();
+    for (int i = 0; i < 32; i++)
+        r.gpr[i] = htobe((uint32_t)context->getReg(intRegClass[i]));
+    auto &pc = context->pcState().as<SparcISA::PCState>();
     r.pc = htobe((uint32_t)pc.pc());
     r.npc = htobe((uint32_t)pc.npc());
-    r.y = htobe((uint32_t)context->readIntReg(NumIntArchRegs + 1));
+    r.y = htobe((uint32_t)context->getReg(int_reg::Y));
     PSTATE pstate = context->readMiscReg(MISCREG_PSTATE);
     r.psr = htobe((uint32_t)pstate);
     r.fsr = htobe((uint32_t)context->readMiscReg(MISCREG_FSR));
-    r.csr = htobe((uint32_t)context->readIntReg(NumIntArchRegs + 2));
+    r.csr = htobe((uint32_t)context->getReg(int_reg::Ccr));
 }
 
 void
 RemoteGDB::SPARC64GdbRegCache::getRegs(ThreadContext *context)
 {
     DPRINTF(GDBAcc, "getRegs in remotegdb \n");
-    for (int i = 0; i < 32; i++) r.gpr[i] = htobe(context->readIntReg(i));
-    for (int i = 0; i < 32; i++) r.fpr[i] = 0;
-    PCState pc = context->pcState();
+    for (int i = 0; i < 32; i++)
+        r.gpr[i] = htobe(context->getReg(intRegClass[i]));
+    for (int i = 0; i < 32; i++)
+        r.fpr[i] = 0;
+    auto &pc = context->pcState().as<SparcISA::PCState>();
     r.pc = htobe(pc.pc());
     r.npc = htobe(pc.npc());
     r.fsr = htobe(context->readMiscReg(MISCREG_FSR));
     r.fprs = htobe(context->readMiscReg(MISCREG_FPRS));
-    r.y = htobe(context->readIntReg(NumIntArchRegs + 1));
+    r.y = htobe(context->getReg(int_reg::Y));
     PSTATE pstate = context->readMiscReg(MISCREG_PSTATE);
     r.state = htobe(
         context->readMiscReg(MISCREG_CWP) |
         pstate << 8 |
         context->readMiscReg(MISCREG_ASI) << 24 |
-        context->readIntReg(NumIntArchRegs + 2) << 32);
+        context->getReg(int_reg::Ccr) << 32);
 }
 
 void
 RemoteGDB::SPARCGdbRegCache::setRegs(ThreadContext *context) const
 {
-    for (int i = 0; i < 32; i++) context->setIntReg(i, r.gpr[i]);
+    for (int i = 0; i < 32; i++)
+        context->setReg(intRegClass[i], r.gpr[i]);
     PCState pc;
     pc.pc(r.pc);
     pc.npc(r.npc);
@@ -229,7 +231,8 @@ RemoteGDB::SPARCGdbRegCache::setRegs(ThreadContext *context) const
 void
 RemoteGDB::SPARC64GdbRegCache::setRegs(ThreadContext *context) const
 {
-    for (int i = 0; i < 32; i++) context->setIntReg(i, r.gpr[i]);
+    for (int i = 0; i < 32; i++)
+        context->setReg(intRegClass[i], r.gpr[i]);
     PCState pc;
     pc.pc(r.pc);
     pc.npc(r.npc);
@@ -243,14 +246,15 @@ RemoteGDB::SPARC64GdbRegCache::setRegs(ThreadContext *context) const
 }
 
 
-RemoteGDB::BaseGdbRegCache*
+BaseGdbRegCache*
 RemoteGDB::gdbRegs()
 {
-    PSTATE pstate = context->readMiscReg(MISCREG_PSTATE);
-    if (pstate.am)
-    {DPRINTF(GDBRead, "Creating 32-bit GDB\n");
-        return new SPARCGdbRegCache(this);}
-    else
-    {DPRINTF(GDBRead, "Creating 64-bit GDB\n");
-        return new SPARC64GdbRegCache(this);}
+    PSTATE pstate = context()->readMiscReg(MISCREG_PSTATE);
+    if (pstate.am) {
+        return &regCache32;
+    } else {
+        return &regCache64;
+    }
 }
+
+} // namespace gem5

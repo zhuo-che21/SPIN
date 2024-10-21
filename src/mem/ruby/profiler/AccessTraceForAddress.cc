@@ -26,8 +26,15 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "mem/ruby/common/Histogram.hh"
 #include "mem/ruby/profiler/AccessTraceForAddress.hh"
+
+#include "mem/ruby/common/Histogram.hh"
+
+namespace gem5
+{
+
+namespace ruby
+{
 
 AccessTraceForAddress::~AccessTraceForAddress()
 {
@@ -102,3 +109,6 @@ AccessTraceForAddress::addSample(int value)
     }
     m_histogram_ptr->add(value);
 }
+
+} // namespace ruby
+} // namespace gem5

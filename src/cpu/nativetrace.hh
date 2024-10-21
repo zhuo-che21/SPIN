@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Gabe Black
  */
 
 #ifndef __CPU_NATIVETRACE_HH__
@@ -41,9 +39,12 @@
 #include "cpu/exetrace.hh"
 #include "cpu/static_inst.hh"
 
+namespace gem5
+{
+
 class ThreadContext;
 
-namespace Trace {
+namespace trace {
 
 class NativeTrace;
 
@@ -55,8 +56,8 @@ class NativeTraceRecord : public ExeTracerRecord
   public:
     NativeTraceRecord(NativeTrace * _parent,
                Tick _when, ThreadContext *_thread,
-               const StaticInstPtr _staticInst, TheISA::PCState _pc,
-               const StaticInstPtr _macroStaticInst = NULL)
+               const StaticInstPtr _staticInst, const PCStateBase &_pc,
+               const StaticInstPtr _macroStaticInst=nullptr)
         : ExeTracerRecord(_when, _thread, _staticInst, _pc, _macroStaticInst),
         parent(_parent)
     {
@@ -70,17 +71,17 @@ class NativeTrace : public ExeTracer
   protected:
     int fd;
 
-    ListenSocket native_listener;
+    ListenSocketPtr native_listener;
 
   public:
 
-    NativeTrace(const Params *p);
+    NativeTrace(const Params &p);
     virtual ~NativeTrace() {}
 
     NativeTraceRecord *
     getInstRecord(Tick when, ThreadContext *tc,
-            const StaticInstPtr staticInst, TheISA::PCState pc,
-            const StaticInstPtr macroStaticInst = NULL)
+            const StaticInstPtr staticInst, const PCStateBase &pc,
+            const StaticInstPtr macroStaticInst=nullptr) override
     {
         return new NativeTraceRecord(this, when, tc,
                 staticInst, pc, macroStaticInst);
@@ -116,6 +117,7 @@ class NativeTrace : public ExeTracer
     check(NativeTraceRecord *record) = 0;
 };
 
-} // namespace Trace
+} // namespace trace
+} // namespace gem5
 
 #endif // __CPU_NATIVETRACE_HH__

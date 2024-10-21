@@ -33,8 +33,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Andreas Hansson
  */
 
 /**
@@ -52,6 +50,12 @@
 #include "mem/qport.hh"
 #include "params/DRAMSim2.hh"
 
+namespace gem5
+{
+
+namespace memory
+{
+
 class DRAMSim2 : public AbstractMemory
 {
   private:
@@ -61,12 +65,12 @@ class DRAMSim2 : public AbstractMemory
      * having unbounded storage that is implicitly created in the port
      * itself.
      */
-    class MemoryPort : public SlavePort
+    class MemoryPort : public ResponsePort
     {
 
       private:
 
-        DRAMSim2& memory;
+        DRAMSim2& mem;
 
       public:
 
@@ -148,7 +152,7 @@ class DRAMSim2 : public AbstractMemory
     /**
      * Event to schedule sending of responses
      */
-    EventWrapper<DRAMSim2, &DRAMSim2::sendResponse> sendResponseEvent;
+    EventFunctionWrapper sendResponseEvent;
 
     /**
      * Progress the controller one clock cycle.
@@ -158,7 +162,7 @@ class DRAMSim2 : public AbstractMemory
     /**
      * Event to schedule clock ticks
      */
-    EventWrapper<DRAMSim2, &DRAMSim2::tick> tickEvent;
+    EventFunctionWrapper tickEvent;
 
     /**
      * Upstream caches need this packet until true is returned, so
@@ -169,7 +173,7 @@ class DRAMSim2 : public AbstractMemory
   public:
 
     typedef DRAMSim2Params Params;
-    DRAMSim2(const Params *p);
+    DRAMSim2(const Params &p);
 
     /**
      * Read completion callback.
@@ -191,8 +195,8 @@ class DRAMSim2 : public AbstractMemory
 
     DrainState drain() override;
 
-    virtual BaseSlavePort& getSlavePort(const std::string& if_name,
-                                        PortID idx = InvalidPortID) override;
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
 
     void init() override;
     void startup() override;
@@ -205,5 +209,8 @@ class DRAMSim2 : public AbstractMemory
     void recvRespRetry();
 
 };
+
+} // namespace memory
+} // namespace gem5
 
 #endif // __MEM_DRAMSIM2_HH__

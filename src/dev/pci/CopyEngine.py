@@ -23,21 +23,22 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Ali Saidi
 
 from m5.SimObject import SimObject
 from m5.params import *
 from m5.proxy import *
-from PciDevice import PciDevice
+
+from m5.objects.PciDevice import PciDevice, PciMemBar
+
 
 class CopyEngine(PciDevice):
-    type = 'CopyEngine'
+    type = "CopyEngine"
     cxx_header = "dev/pci/copy_engine.hh"
-    dma = VectorMasterPort("Copy engine DMA port")
+    cxx_class = "gem5::CopyEngine"
+    dma = VectorRequestPort("Copy engine DMA port")
     VendorID = 0x8086
-    DeviceID = 0x1a38
-    Revision = 0xA2 # CM2 stepping (newest listed)
+    DeviceID = 0x1A38
+    Revision = 0xA2  # CM2 stepping (newest listed)
     SubsystemID = 0
     SubsystemVendorID = 0
     Status = 0x0000
@@ -45,15 +46,22 @@ class CopyEngine(PciDevice):
     ClassCode = 0x80
     ProgIF = 0x00
     MaximumLatency = 0x00
-    MinimumGrant = 0xff
+    MinimumGrant = 0xFF
     InterruptLine = 0x20
     InterruptPin = 0x01
-    BAR0Size = '1kB'
+
+    BAR0 = PciMemBar(size="1KiB")
 
     ChanCnt = Param.UInt8(4, "Number of DMA channels that exist on device")
-    XferCap = Param.MemorySize('4kB', "Number of bits of transfer size that are supported")
+    XferCap = Param.MemorySize(
+        "4KiB", "Number of bits of transfer size that are supported"
+    )
 
-    latBeforeBegin = Param.Latency('20ns', "Latency after a DMA command is seen before it's proccessed")
-    latAfterCompletion = Param.Latency('20ns', "Latency after a DMA command is complete before it's reported as such")
-
-
+    latBeforeBegin = Param.Latency(
+        "20ns", "Latency after a DMA command is seen before it's proccessed"
+    )
+    latAfterCompletion = Param.Latency(
+        "20ns",
+        "Latency after a DMA command is complete before "
+        "it's reported as such",
+    )

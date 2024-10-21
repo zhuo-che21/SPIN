@@ -23,15 +23,15 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Nathan Binkert
 
 from m5.SimObject import SimObject
 from m5.params import *
 from m5.proxy import *
 
+
 class SimpleDisk(SimObject):
-    type = 'SimpleDisk'
+    type = "SimpleDisk"
     cxx_header = "dev/storage/simple_disk.hh"
+    cxx_class = "gem5::SimpleDisk"
     disk = Param.DiskImage("Disk Image")
     system = Param.System(Parent.any, "System Pointer")

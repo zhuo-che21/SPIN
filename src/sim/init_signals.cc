@@ -37,8 +37,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 #include "sim/init_signals.hh"
@@ -50,24 +48,35 @@
 #include <iostream>
 #include <string>
 
+#if defined(__FreeBSD__)
+#include <sys/param.h>
+
+#endif
+
 #include "base/atomicio.hh"
 #include "base/cprintf.hh"
+#include "base/logging.hh"
 #include "sim/async.hh"
 #include "sim/backtrace.hh"
-#include "sim/core.hh"
 #include "sim/eventq.hh"
 
-using namespace std;
+namespace gem5
+{
 
 // Use an separate stack for fatal signal handlers
-static uint8_t fatalSigStack[2 * SIGSTKSZ];
 
 static bool
 setupAltStack()
 {
+    const auto stack_size = 2 * SIGSTKSZ;
+    static uint8_t *fatal_sig_stack = new uint8_t[stack_size];
     stack_t stack;
-    stack.ss_sp = fatalSigStack;
-    stack.ss_size = sizeof(fatalSigStack);
+#if defined(__FreeBSD__) && (__FreeBSD_version < 1100097)
+    stack.ss_sp = (char *)fatal_sig_stack;
+#else
+    stack.ss_sp = fatal_sig_stack;
+#endif
+    stack.ss_size = stack_size;
     stack.ss_flags = 0;
 
     return sigaltstack(&stack, NULL) == 0;
@@ -94,6 +103,8 @@ raiseFatalSignal(int signo)
     // The signal handler should have been reset and unmasked (it was
     // registered with SA_RESETHAND | SA_NODEFER), just raise the
     // signal again to invoke the default handler.
+    STATIC_ERR("For more info on how to address this issue, please visit "
+        "https://www.gem5.org/documentation/general_docs/common-errors/ \n\n");
     pthread_kill(pthread_self(), signo);
 
     // Something is really wrong if the process is alive at this
@@ -138,7 +149,8 @@ abortHandler(int sigtype)
 {
     const EventQueue *const eq(curEventQueue());
     if (eq) {
-        ccprintf(cerr, "Program aborted at tick %llu\n", eq->getCurTick());
+        ccprintf(std::cerr, "Program aborted at tick %llu\n",
+                eq->getCurTick());
     } else {
         STATIC_ERR("Program aborted\n\n");
     }
@@ -206,3 +218,4 @@ initSignals()
     installSignalHandler(SIGIO, ioHandler);
 }
 
+} // namespace gem5

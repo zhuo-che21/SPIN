@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 /* @file
@@ -35,15 +33,17 @@
 #ifndef __DEV_NET_ETHERBUS_HH__
 #define __DEV_NET_ETHERBUS_HH__
 
-#include "dev/net/etherobject.hh"
 #include "dev/net/etherpkt.hh"
 #include "params/EtherBus.hh"
 #include "sim/eventq.hh"
 #include "sim/sim_object.hh"
 
+namespace gem5
+{
+
 class EtherDump;
 class EtherInt;
-class EtherBus : public EtherObject
+class EtherBus : public SimObject
 {
   protected:
     typedef std::list<EtherInt *> devlist_t;
@@ -52,39 +52,24 @@ class EtherBus : public EtherObject
     bool loopback;
 
   protected:
-    class DoneEvent : public Event
-    {
-      protected:
-        EtherBus *bus;
-
-      public:
-        DoneEvent(EtherBus *b) : bus(b) {}
-        virtual void process() { bus->txDone(); }
-        virtual const char *description() const
-            { return "ethernet bus completion"; }
-    };
-
-    DoneEvent event;
+    EventFunctionWrapper event;
     EthPacketPtr packet;
     EtherInt *sender;
     EtherDump *dump;
 
   public:
-    typedef EtherBusParams Params;
-    EtherBus(const Params *p);
+    using Params = EtherBusParams;
+    EtherBus(const Params &p);
     virtual ~EtherBus() {}
-
-    const Params *
-    params() const
-    {
-        return dynamic_cast<const Params *>(_params);
-    }
 
     void txDone();
     void reg(EtherInt *dev);
     bool busy() const { return (bool)packet; }
     bool send(EtherInt *sender, EthPacketPtr &packet);
-    virtual EtherInt *getEthPort(const std::string &if_name, int idx);
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
 };
+
+} // namespace gem5
 
 #endif // __DEV_NET_ETHERBUS_HH__

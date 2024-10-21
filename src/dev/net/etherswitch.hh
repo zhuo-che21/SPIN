@@ -24,9 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Anthony Gutierrez
- *          Mohammad Alian
  */
 
 /* @file
@@ -38,30 +35,32 @@
 
 #include <map>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "base/inet.hh"
 #include "dev/net/etherint.hh"
 #include "dev/net/etherlink.hh"
-#include "dev/net/etherobject.hh"
 #include "dev/net/etherpkt.hh"
 #include "dev/net/pktfifo.hh"
 #include "params/EtherSwitch.hh"
 #include "sim/eventq.hh"
+#include "sim/serialize.hh"
+#include "sim/sim_object.hh"
 
-class EtherSwitch : public EtherObject
+namespace gem5
+{
+
+class EtherSwitch : public SimObject
 {
   public:
-    typedef EtherSwitchParams Params;
+    using Params = EtherSwitchParams;
 
-    EtherSwitch(const Params *p);
+    EtherSwitch(const Params &p);
     ~EtherSwitch();
 
-    const Params * params() const
-    {
-        return dynamic_cast<const Params*>(_params);
-    }
-
-    EtherInt *getEthPort(const std::string &if_name, int idx) override;
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
 
   protected:
     /**
@@ -85,8 +84,8 @@ class EtherSwitch : public EtherObject
         void sendDone() {}
         Tick switchingDelay();
 
-        Interface* lookupDestPort(Net::EthAddr destAddr);
-        void learnSenderAddr(Net::EthAddr srcMacAddr, Interface *sender);
+        Interface* lookupDestPort(networking::EthAddr destAddr);
+        void learnSenderAddr(networking::EthAddr srcMacAddr, Interface *sender);
 
         void serialize(CheckpointOut &cp) const;
         void unserialize(CheckpointIn &cp);
@@ -121,7 +120,8 @@ class EtherSwitch : public EtherObject
         class PortFifo : public Serializable
         {
           protected:
-            struct EntryOrder {
+            struct EntryOrder
+            {
                 bool operator() (const PortFifoEntry& lhs,
                                  const PortFifoEntry& rhs) const
                 {
@@ -172,10 +172,11 @@ class EtherSwitch : public EtherObject
          */
         PortFifo outputFifo;
         void transmit();
-        EventWrapper<Interface, &Interface::transmit> txEvent;
+        EventFunctionWrapper txEvent;
     };
 
-    struct SwitchTableEntry {
+    struct SwitchTableEntry
+    {
             Interface *interface;
             Tick lastUseTime;
         };
@@ -191,5 +192,7 @@ class EtherSwitch : public EtherObject
     void serialize(CheckpointOut &cp) const override;
     void unserialize(CheckpointIn &cp) override;
 };
+
+} // namespace gem5
 
 #endif // __DEV_ETHERSWITCH_HH__

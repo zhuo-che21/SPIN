@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 ARM Limited
+ * Copyright (c) 2016-2018, 2021 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -33,8 +33,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: David Guillen Fandos
  */
 
 #include "sim/power/power_model.hh"
@@ -42,21 +40,47 @@
 #include "base/statistics.hh"
 #include "params/PowerModel.hh"
 #include "params/PowerModelState.hh"
-#include "sim/sim_object.hh"
+#include "sim/clocked_object.hh"
 #include "sim/sub_system.hh"
 
-PowerModelState::PowerModelState(const Params *p)
-    : SimObject(p), _temp(0), clocked_object(NULL)
+namespace gem5
 {
+
+PowerModelState::PowerModelState(const Params &p)
+    : SimObject(p), _temp(0), clocked_object(NULL),
+      ADD_STAT(dynamicPower, statistics::units::Watt::get(),
+               "Dynamic power for this object (Watts)"),
+      ADD_STAT(staticPower, statistics::units::Watt::get(),
+               "Static power for this object (Watts)")
+{
+    dynamicPower
+      .method(this, &PowerModelState::getDynamicPower);
+    staticPower
+      .method(this, &PowerModelState::getStaticPower);
 }
 
-PowerModel::PowerModel(const Params *p)
-    : SimObject(p), states_pm(p->pm), subsystem(p->subsystem),
-      clocked_object(NULL)
+PowerModel::PowerModel(const Params &p)
+    : SimObject(p), states_pm(p.pm), subsystem(p.subsystem),
+      clocked_object(NULL), power_model_type(p.pm_type),
+      ADD_STAT(dynamicPower, statistics::units::Watt::get(),
+                         "Dynamic power for this power state"),
+      ADD_STAT(staticPower, statistics::units::Watt::get(),
+                         "Static power for this power state")
 {
     panic_if(subsystem == NULL,
              "Subsystem is NULL! This is not acceptable for a PowerModel!\n");
     subsystem->registerPowerProducer(this);
+    // The temperature passed here will be overwritten, if there is
+    // a thermal model present
+    for (auto & pms: states_pm){
+        pms->setTemperature(p.ambient_temp);
+    }
+
+    dynamicPower
+      .method(this, &PowerModel::getDynamicPower);
+    staticPower
+      .method(this, &PowerModel::getStaticPower);
+
 }
 
 void
@@ -69,7 +93,7 @@ PowerModel::setClockedObject(ClockedObject * clkobj)
 }
 
 void
-PowerModel::thermalUpdateCallback(const double & temp)
+PowerModel::thermalUpdateCallback(const Temperature &temp)
 {
     for (auto & pms: states_pm)
         pms->setTemperature(temp);
@@ -83,24 +107,22 @@ PowerModel::regProbePoints()
     ));
 }
 
-PowerModel*
-PowerModelParams::create()
-{
-    return new PowerModel(this);
-}
-
 double
 PowerModel::getDynamicPower() const
 {
     assert(clocked_object);
 
-    std::vector<double> w = clocked_object->pwrStateWeights();
+    if (power_model_type == enums::PMType::Static) {
+        // This power model only collects static data
+        return 0;
+    }
+    std::vector<double> w = clocked_object->powerState->getWeights();
 
     // Same number of states (excluding UNDEFINED)
     assert(w.size() - 1 == states_pm.size());
 
     // Make sure we have no UNDEFINED state
-    warn_if(w[Enums::PwrState::UNDEFINED] > 0,
+    warn_if(w[enums::PwrState::UNDEFINED] > 0,
         "SimObject in UNDEFINED power state! Power figures might be wrong!\n");
 
     double power = 0;
@@ -116,7 +138,12 @@ PowerModel::getStaticPower() const
 {
     assert(clocked_object);
 
-    std::vector<double> w = clocked_object->pwrStateWeights();
+    std::vector<double> w = clocked_object->powerState->getWeights();
+
+    if (power_model_type == enums::PMType::Dynamic) {
+        // This power model only collects dynamic data
+        return 0;
+    }
 
     // Same number of states (excluding UNDEFINED)
     assert(w.size() - 1 == states_pm.size());
@@ -136,3 +163,5 @@ PowerModel::getStaticPower() const
 
     return power;
 }
+
+} // namespace gem5

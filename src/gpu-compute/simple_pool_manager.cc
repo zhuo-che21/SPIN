@@ -2,8 +2,6 @@
  * Copyright (c) 2015 Advanced Micro Devices, Inc.
  * All rights reserved.
  *
- * For use for simulation and test purposes only
- *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *
@@ -14,9 +12,9 @@
  * this list of conditions and the following disclaimer in the documentation
  * and/or other materials provided with the distribution.
  *
- * 3. Neither the name of the copyright holder nor the names of its contributors
- * may be used to endorse or promote products derived from this software
- * without specific prior written permission.
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from this
+ * software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -29,13 +27,14 @@
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * Author: John Kalamatianos
  */
 
 #include "gpu-compute/simple_pool_manager.hh"
 
-#include "base/misc.hh"
+#include "base/logging.hh"
+
+namespace gem5
+{
 
 // return the min number of elements that the manager can reserve given
 // a request for "size" elements
@@ -66,8 +65,6 @@ SimplePoolManager::printRegion()
 bool
 SimplePoolManager::canAllocate(uint32_t numRegions, uint32_t size)
 {
-    assert(numRegions * minAllocatedElements(size) <= poolSize());
-
     return _reservedGroups == 0;
 }
 
@@ -106,3 +103,5 @@ SimplePoolManager::regionSize(std::pair<uint32_t, uint32_t> &region)
         return region.second + poolSize() - region.first + 1;
     }
 }
+
+} // namespace gem5

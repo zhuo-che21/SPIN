@@ -1,4 +1,4 @@
-# Copyright (c) 2016 ARM Limited
+# Copyright (c) 2016-2018, 2021 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -32,26 +32,28 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: David Guillen Fandos
 
-from m5.SimObject import SimObject
+from m5.SimObject import *
 from m5.params import *
 from m5.proxy import Parent
+
+# Enum for a type of  power model
+class PMType(Enum):
+    vals = ["All", "Static", "Dynamic"]
+
 
 # Represents a power model for a simobj
 # The model itself is also a SimObject so we can make use some
 # nice features available such as Parent.any
 class PowerModel(SimObject):
-    type = 'PowerModel'
+    type = "PowerModel"
     cxx_header = "sim/power/power_model.hh"
+    cxx_class = "gem5::PowerModel"
 
-    @classmethod
-    def export_methods(cls, code):
-        code('''
-      double getDynamicPower() const;
-      double getStaticPower() const;
-''')
+    cxx_exports = [
+        PyBindMethod("getDynamicPower"),
+        PyBindMethod("getStaticPower"),
+    ]
 
     # Keep a list of every model for every power state
     pm = VectorParam.PowerModelState([], "List of per-state power models.")
@@ -59,3 +61,9 @@ class PowerModel(SimObject):
     # Need a reference to the system so we can query the thermal domain
     # about temperature (temperature is needed for leakage calculation)
     subsystem = Param.SubSystem(Parent.any, "subsystem")
+
+    # Type of power model
+    pm_type = Param.PMType("All", "Type of power model")
+
+    # Ambient temperature to be used when no thermal model is present
+    ambient_temp = Param.Temperature("25.0C", "Ambient temperature")

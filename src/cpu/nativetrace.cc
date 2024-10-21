@@ -24,38 +24,33 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Gabe Black
  */
 
-#include "base/socket.hh"
 #include "cpu/nativetrace.hh"
+
+#include "base/socket.hh"
 #include "cpu/static_inst.hh"
 #include "debug/GDBMisc.hh"
 #include "params/NativeTrace.hh"
 
-using namespace std;
+namespace gem5
+{
 
-namespace Trace {
+namespace trace {
 
-NativeTrace::NativeTrace(const Params *p)
-    : ExeTracer(p)
+NativeTrace::NativeTrace(const Params &p)
+    : ExeTracer(p), native_listener(listenSocketInetConfig(8000).build(p.name))
 {
     if (ListenSocket::allDisabled())
         fatal("All listeners are disabled!");
 
-    int port = 8000;
-    while (!native_listener.listen(port, true))
-    {
-        DPRINTF(GDBMisc, "Can't bind port %d\n", port);
-        port++;
-    }
-    ccprintf(cerr, "Listening for native process on port %d\n", port);
-    fd = native_listener.accept();
+    native_listener->listen();
+
+    fd = native_listener->accept();
 }
 
 void
-Trace::NativeTraceRecord::dump()
+NativeTraceRecord::dump()
 {
     //Don't print what happens for each micro-op, just print out
     //once at the last op, and for regular instructions.
@@ -63,4 +58,5 @@ Trace::NativeTraceRecord::dump()
         parent->check(this);
 }
 
-} // namespace Trace
+} // namespace trace
+} // namespace gem5

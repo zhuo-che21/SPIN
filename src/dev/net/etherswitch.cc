@@ -24,9 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Anthony Gutierrez
- *          Mohammad Alian
  */
 
 /* @file
@@ -36,18 +33,22 @@
 #include "dev/net/etherswitch.hh"
 
 #include "base/random.hh"
+#include "base/trace.hh"
 #include "debug/EthernetAll.hh"
+#include "sim/core.hh"
+#include "sim/cur_tick.hh"
 
-using namespace std;
-
-EtherSwitch::EtherSwitch(const Params *p)
-    : EtherObject(p), ttl(p->time_to_live)
+namespace gem5
 {
-    for (int i = 0; i < p->port_interface_connection_count; ++i) {
+
+EtherSwitch::EtherSwitch(const Params &p)
+    : SimObject(p), ttl(p.time_to_live)
+{
+    for (int i = 0; i < p.port_interface_connection_count; ++i) {
         std::string interfaceName = csprintf("%s.interface%d", name(), i);
         Interface *interface = new Interface(interfaceName, this,
-                                        p->output_buffer_size, p->delay,
-                                        p->delay_var, p->fabric_speed, i);
+                                        p.output_buffer_size, p.delay,
+                                        p.delay_var, p.fabric_speed, i);
         interfaces.push_back(interface);
     }
 }
@@ -60,16 +61,15 @@ EtherSwitch::~EtherSwitch()
     interfaces.clear();
 }
 
-EtherInt*
-EtherSwitch::getEthPort(const std::string &if_name, int idx)
+Port &
+EtherSwitch::getPort(const std::string &if_name, PortID idx)
 {
-    if (idx < 0 || idx >= interfaces.size())
-        return nullptr;
+    if (if_name == "interface") {
+        panic_if(idx < 0 || idx >= interfaces.size(), "index out of bounds");
+        return *interfaces.at(idx);
+    }
 
-    Interface *interface = interfaces.at(idx);
-    panic_if(interface->getPeer(), "interface already connected\n");
-
-    return interface;
+    return SimObject::getPort(if_name, idx);
 }
 
 bool
@@ -129,15 +129,16 @@ EtherSwitch::Interface::Interface(const std::string &name,
                                   Tick delay_var, double rate, unsigned id)
     : EtherInt(name), ticksPerByte(rate), switchDelay(delay),
       delayVar(delay_var), interfaceId(id), parent(etherSwitch),
-      outputFifo(name + ".outputFifo", outputBufferSize), txEvent(this)
+      outputFifo(name + ".outputFifo", outputBufferSize),
+      txEvent([this]{ transmit(); }, name)
 {
 }
 
 bool
 EtherSwitch::Interface::recvPacket(EthPacketPtr packet)
 {
-    Net::EthAddr destMacAddr(packet->data);
-    Net::EthAddr srcMacAddr(&packet->data[6]);
+    networking::EthAddr destMacAddr(packet->data);
+    networking::EthAddr srcMacAddr(&packet->data[6]);
 
     learnSenderAddr(srcMacAddr, this);
     Interface *receiver = lookupDestPort(destMacAddr);
@@ -185,7 +186,7 @@ EtherSwitch::Interface::transmit()
     if (!sendPacket(outputFifo.front())) {
         DPRINTF(Ethernet, "output port busy...retry later\n");
         if (!txEvent.scheduled())
-            parent->schedule(txEvent, curTick() + retryTime);
+            parent->schedule(txEvent, curTick() + sim_clock::as_int::ns);
     } else {
         DPRINTF(Ethernet, "packet sent: len=%d\n", outputFifo.front()->length);
         outputFifo.pop();
@@ -209,7 +210,7 @@ EtherSwitch::Interface::switchingDelay()
 }
 
 EtherSwitch::Interface*
-EtherSwitch::Interface::lookupDestPort(Net::EthAddr destMacAddr)
+EtherSwitch::Interface::lookupDestPort(networking::EthAddr destMacAddr)
 {
     auto it = parent->forwardingTable.find(uint64_t(destMacAddr));
 
@@ -233,7 +234,7 @@ EtherSwitch::Interface::lookupDestPort(Net::EthAddr destMacAddr)
 }
 
 void
-EtherSwitch::Interface::learnSenderAddr(Net::EthAddr srcMacAddr,
+EtherSwitch::Interface::learnSenderAddr(networking::EthAddr srcMacAddr,
                                           Interface *sender)
 {
     // learn the port for the sending MAC address
@@ -309,7 +310,7 @@ EtherSwitch::Interface::PortFifoEntry::serialize(CheckpointOut &cp) const
 void
 EtherSwitch::Interface::PortFifoEntry::unserialize(CheckpointIn &cp)
 {
-    packet = make_shared<EthPacketData>(16384);
+    packet = std::make_shared<EthPacketData>(16384);
     packet->unserialize("packet", cp);
     UNSERIALIZE_SCALAR(recvTick);
     UNSERIALIZE_SCALAR(srcId);
@@ -347,8 +348,4 @@ EtherSwitch::Interface::PortFifo::unserialize(CheckpointIn &cp)
     }
 }
 
-EtherSwitch *
-EtherSwitchParams::create()
-{
-    return new EtherSwitch(this);
-}
+} // namespace gem5

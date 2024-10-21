@@ -23,14 +23,13 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Gabe Black
 
 from m5.SimObject import SimObject
 from m5.params import *
 
+
 class InstTracer(SimObject):
-    type = 'InstTracer'
-    cxx_class = 'Trace::InstTracer'
-    abstract = True
+    type = "InstTracer"
     cxx_header = "sim/insttracer.hh"
+    cxx_class = "gem5::trace::InstTracer"
+    abstract = True

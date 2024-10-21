@@ -26,10 +26,17 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "base/stl_helpers.hh"
 #include "mem/ruby/common/SubBlock.hh"
 
-using m5::stl_helpers::operator<<;
+#include "base/stl_helpers.hh"
+
+namespace gem5
+{
+
+namespace ruby
+{
+
+using stl_helpers::operator<<;
 
 SubBlock::SubBlock(Addr addr, int size)
 {
@@ -69,5 +76,5 @@ SubBlock::print(std::ostream& out) const
     out << "[" << m_address << ", " << getSize() << ", " << m_data << "]";
 }
 
-
-
+} // namespace ruby
+} // namespace gem5

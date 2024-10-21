@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 #include "dev/net/sinic.hh"
@@ -34,15 +32,10 @@
 #include <limits>
 #include <string>
 
-#ifdef SINIC_VTOPHYS
-#include "arch/vtophys.hh"
-
-#endif
 #include "base/compiler.hh"
 #include "base/debug.hh"
 #include "base/inet.hh"
 #include "base/types.hh"
-#include "config/the_isa.hh"
 #include "debug/EthernetAll.hh"
 #include "dev/net/etherlink.hh"
 #include "mem/packet.hh"
@@ -50,11 +43,13 @@
 #include "sim/eventq.hh"
 #include "sim/stats.hh"
 
-using namespace std;
-using namespace Net;
-using namespace TheISA;
+namespace gem5
+{
 
-namespace Sinic {
+using namespace networking;
+
+namespace sinic
+{
 
 const char *RxStateStrings[] =
 {
@@ -79,57 +74,45 @@ const char *TxStateStrings[] =
 //
 // Sinic PCI Device
 //
-Base::Base(const Params *p)
+Base::Base(const Params &p)
     : EtherDevBase(p), rxEnable(false), txEnable(false),
-      intrDelay(p->intr_delay), intrTick(0), cpuIntrEnable(false),
+      intrDelay(p.intr_delay), intrTick(0), cpuIntrEnable(false),
       cpuPendingIntr(false), intrEvent(0), interface(NULL)
 {
 }
 
-Device::Device(const Params *p)
+Device::Device(const Params &p)
     : Base(p), rxUnique(0), txUnique(0),
-      virtualRegs(p->virtual_count < 1 ? 1 : p->virtual_count),
-      rxFifo(p->rx_fifo_size), txFifo(p->tx_fifo_size),
+      virtualRegs(p.virtual_count < 1 ? 1 : p.virtual_count),
+      rxFifo(p.rx_fifo_size), txFifo(p.tx_fifo_size),
       rxKickTick(0), txKickTick(0),
-      txEvent(this), rxDmaEvent(this), txDmaEvent(this),
-      dmaReadDelay(p->dma_read_delay), dmaReadFactor(p->dma_read_factor),
-      dmaWriteDelay(p->dma_write_delay), dmaWriteFactor(p->dma_write_factor)
+      txEvent([this]{ txEventTransmit(); }, name()),
+      rxDmaEvent([this]{ rxDmaDone(); }, name()),
+      txDmaEvent([this]{ txDmaDone(); }, name()),
+      dmaReadDelay(p.dma_read_delay), dmaReadFactor(p.dma_read_factor),
+      dmaWriteDelay(p.dma_write_delay), dmaWriteFactor(p.dma_write_factor),
+      sinicDeviceStats(this)
 {
     interface = new Interface(name() + ".int0", this);
     reset();
-
 }
 
 Device::~Device()
 {}
 
-void
-Device::regStats()
+Device::DeviceStats::DeviceStats(statistics::Group *parent)
+    : statistics::Group(parent, "SinicDevice"),
+      ADD_STAT(totalVnicDistance, statistics::units::Count::get(),
+               "Total vnic distance"),
+      ADD_STAT(numVnicDistance, statistics::units::Count::get(),
+               "Number of vnic distance measurements"),
+      ADD_STAT(maxVnicDistance, statistics::units::Count::get(),
+               "Maximum vnic distance"),
+      ADD_STAT(avgVnicDistance, statistics::units::Rate<
+                    statistics::units::Count, statistics::units::Count>::get(),
+               "Average vnic distance", totalVnicDistance / numVnicDistance),
+      _maxVnicDistance(0)
 {
-    Base::regStats();
-
-    _maxVnicDistance = 0;
-
-    maxVnicDistance
-        .name(name() + ".maxVnicDistance")
-        .desc("maximum vnic distance")
-        ;
-
-    totalVnicDistance
-        .name(name() + ".totalVnicDistance")
-        .desc("total vnic distance")
-        ;
-    numVnicDistance
-        .name(name() + ".numVnicDistance")
-        .desc("number of vnic distance measurements")
-        ;
-
-    avgVnicDistance
-        .name(name() + ".avgVnicDistance")
-        .desc("average vnic distance")
-        ;
-
-    avgVnicDistance = totalVnicDistance / numVnicDistance;
 }
 
 void
@@ -137,19 +120,15 @@ Device::resetStats()
 {
     Base::resetStats();
 
-    _maxVnicDistance = 0;
+    sinicDeviceStats._maxVnicDistance = 0;
 }
 
-EtherInt*
-Device::getEthPort(const std::string &if_name, int idx)
+Port &
+Device::getPort(const std::string &if_name, PortID idx)
 {
-    if (if_name == "interface") {
-        if (interface->getPeer())
-            panic("interface already connected to\n");
-
-        return interface;
-    }
-    return NULL;
+    if (if_name == "interface")
+        return *interface;
+    return EtherDevBase::getPort(if_name, idx);
 }
 
 
@@ -169,7 +148,7 @@ Device::prepareIO(ContextID cpu, int index)
 void
 Device::prepareRead(ContextID cpu, int index)
 {
-    using namespace Regs;
+    using namespace registers;
     prepareIO(cpu, index);
 
     VirtualReg &vnic = virtualRegs[index];
@@ -220,39 +199,45 @@ Tick
 Device::read(PacketPtr pkt)
 {
     assert(config.command & PCI_CMD_MSE);
-    assert(pkt->getAddr() >= BARAddrs[0] && pkt->getSize() < BARSize[0]);
+
+    Addr daddr = pkt->getAddr();
+    assert(BARs[0]->range().contains(daddr));
+    daddr -= BARs[0]->addr();
 
     ContextID cpu = pkt->req->contextId();
-    Addr daddr = pkt->getAddr() - BARAddrs[0];
-    Addr index = daddr >> Regs::VirtualShift;
-    Addr raddr = daddr & Regs::VirtualMask;
+    Addr index = daddr >> registers::VirtualShift;
+    Addr raddr = daddr & registers::VirtualMask;
 
-    if (!regValid(raddr))
+    if (!regValid(raddr)) {
         panic("invalid register: cpu=%d vnic=%d da=%#x pa=%#x size=%d",
               cpu, index, daddr, pkt->getAddr(), pkt->getSize());
+    }
 
-    const Regs::Info &info = regInfo(raddr);
-    if (!info.read)
+    const registers::Info &info = regInfo(raddr);
+    if (!info.read) {
         panic("read %s (write only): "
               "cpu=%d vnic=%d da=%#x pa=%#x size=%d",
               info.name, cpu, index, daddr, pkt->getAddr(), pkt->getSize());
+    }
 
+    if (info.size != pkt->getSize()) {
         panic("read %s (invalid size): "
               "cpu=%d vnic=%d da=%#x pa=%#x size=%d",
               info.name, cpu, index, daddr, pkt->getAddr(), pkt->getSize());
+    }
 
     prepareRead(cpu, index);
 
-    uint64_t value M5_VAR_USED = 0;
+    [[maybe_unused]] uint64_t value = 0;
     if (pkt->getSize() == 4) {
         uint32_t reg = regData32(raddr);
-        pkt->set(reg);
+        pkt->setLE(reg);
         value = reg;
     }
 
     if (pkt->getSize() == 8) {
         uint64_t reg = regData64(raddr);
-        pkt->set(reg);
+        pkt->setLE(reg);
         value = reg;
     }
 
@@ -262,7 +247,7 @@ Device::read(PacketPtr pkt)
 
     // reading the interrupt status register has the side effect of
     // clearing it
-    if (raddr == Regs::IntrStatus)
+    if (raddr == registers::IntrStatus)
         devIntrClear();
 
     return pioDelay;
@@ -277,7 +262,7 @@ Device::iprRead(Addr daddr, ContextID cpu, uint64_t &result)
     if (!regValid(daddr))
         panic("invalid address: da=%#x", daddr);
 
-    const Regs::Info &info = regInfo(daddr);
+    const registers::Info &info = regInfo(daddr);
     if (!info.read)
         panic("reading %s (write only): cpu=%d da=%#x", info.name, cpu, daddr);
 
@@ -305,18 +290,20 @@ Tick
 Device::write(PacketPtr pkt)
 {
     assert(config.command & PCI_CMD_MSE);
-    assert(pkt->getAddr() >= BARAddrs[0] && pkt->getSize() < BARSize[0]);
+
+    Addr daddr = pkt->getAddr();
+    assert(BARs[0]->range().contains(daddr));
+    daddr -= BARs[0]->addr();
 
     ContextID cpu = pkt->req->contextId();
-    Addr daddr = pkt->getAddr() - BARAddrs[0];
-    Addr index = daddr >> Regs::VirtualShift;
-    Addr raddr = daddr & Regs::VirtualMask;
+    Addr index = daddr >> registers::VirtualShift;
+    Addr raddr = daddr & registers::VirtualMask;
 
     if (!regValid(raddr))
         panic("invalid register: cpu=%d, da=%#x pa=%#x size=%d",
                 cpu, daddr, pkt->getAddr(), pkt->getSize());
 
-    const Regs::Info &info = regInfo(raddr);
+    const registers::Info &info = regInfo(raddr);
     if (!info.write)
         panic("write %s (read only): "
               "cpu=%d vnic=%d da=%#x pa=%#x size=%d",
@@ -331,49 +318,42 @@ Device::write(PacketPtr pkt)
 
     DPRINTF(EthernetPIO,
             "write %s vnic %d: cpu=%d val=%#x da=%#x pa=%#x size=%d\n",
-            info.name, index, cpu, info.size == 4 ? pkt->get<uint32_t>() :
-            pkt->get<uint64_t>(), daddr, pkt->getAddr(), pkt->getSize());
+            info.name, index, cpu, info.size == 4 ?
+            pkt->getLE<uint32_t>() : pkt->getLE<uint64_t>(),
+            daddr, pkt->getAddr(), pkt->getSize());
 
     prepareWrite(cpu, index);
 
     switch (raddr) {
-      case Regs::Config:
-        changeConfig(pkt->get<uint32_t>());
+      case registers::Config:
+        changeConfig(pkt->getLE<uint32_t>());
         break;
 
-      case Regs::Command:
-        command(pkt->get<uint32_t>());
+      case registers::Command:
+        command(pkt->getLE<uint32_t>());
         break;
 
-      case Regs::IntrStatus:
-        devIntrClear(regs.IntrStatus & pkt->get<uint32_t>());
+      case registers::IntrStatus:
+        devIntrClear(regs.IntrStatus &
+                pkt->getLE<uint32_t>());
         break;
 
-      case Regs::IntrMask:
-        devIntrChangeMask(pkt->get<uint32_t>());
+      case registers::IntrMask:
+        devIntrChangeMask(pkt->getLE<uint32_t>());
         break;
 
-      case Regs::RxData:
-        if (Regs::get_RxDone_Busy(vnic.RxDone))
+      case registers::RxData:
+        if (registers::get_RxDone_Busy(vnic.RxDone))
             panic("receive machine busy with another request! rxState=%s",
                   RxStateStrings[rxState]);
 
         vnic.rxUnique = rxUnique++;
-        vnic.RxDone = Regs::RxDone_Busy;
-        vnic.RxData = pkt->get<uint64_t>();
+        vnic.RxDone = registers::RxDone_Busy;
+        vnic.RxData = pkt->getLE<uint64_t>();
         rxBusyCount++;
 
-        if (Regs::get_RxData_Vaddr(pkt->get<uint64_t>())) {
+        if (registers::get_RxData_Vaddr(pkt->getLE<uint64_t>())) {
             panic("vtophys not implemented in newmem");
-#ifdef SINIC_VTOPHYS
-            Addr vaddr = Regs::get_RxData_Addr(reg64);
-            Addr paddr = vtophys(req->xc, vaddr);
-            DPRINTF(EthernetPIO, "write RxData vnic %d (rxunique %d): "
-                    "vaddr=%#x, paddr=%#x\n",
-                    index, vnic.rxUnique, vaddr, paddr);
-
-            vnic.RxData = Regs::set_RxData_Addr(vnic.RxData, paddr);
-#endif
         } else {
             DPRINTF(EthernetPIO, "write RxData vnic %d (rxunique %d)\n",
                     index, vnic.rxUnique);
@@ -393,25 +373,16 @@ Device::write(PacketPtr pkt)
         }
         break;
 
-      case Regs::TxData:
-        if (Regs::get_TxDone_Busy(vnic.TxDone))
+      case registers::TxData:
+        if (registers::get_TxDone_Busy(vnic.TxDone))
             panic("transmit machine busy with another request! txState=%s",
                   TxStateStrings[txState]);
 
         vnic.txUnique = txUnique++;
-        vnic.TxDone = Regs::TxDone_Busy;
+        vnic.TxDone = registers::TxDone_Busy;
 
-        if (Regs::get_TxData_Vaddr(pkt->get<uint64_t>())) {
+        if (registers::get_TxData_Vaddr(pkt->getLE<uint64_t>())) {
             panic("vtophys won't work here in newmem.\n");
-#ifdef SINIC_VTOPHYS
-            Addr vaddr = Regs::get_TxData_Addr(reg64);
-            Addr paddr = vtophys(req->xc, vaddr);
-            DPRINTF(EthernetPIO, "write TxData vnic %d (txunique %d): "
-                    "vaddr=%#x, paddr=%#x\n",
-                    index, vnic.txUnique, vaddr, paddr);
-
-            vnic.TxData = Regs::set_TxData_Addr(vnic.TxData, paddr);
-#endif
         } else {
             DPRINTF(EthernetPIO, "write TxData vnic %d (txunique %d)\n",
                     index, vnic.txUnique);
@@ -432,7 +403,7 @@ Device::write(PacketPtr pkt)
 void
 Device::devIntrPost(uint32_t interrupts)
 {
-    if ((interrupts & Regs::Intr_Res))
+    if ((interrupts & registers::Intr_Res))
         panic("Cannot set a reserved interrupt");
 
     regs.IntrStatus |= interrupts;
@@ -448,18 +419,18 @@ Device::devIntrPost(uint32_t interrupts)
     if (rxEmpty)
         rxEmpty = false;
     else
-        interrupts &= ~Regs::Intr_RxHigh;
+        interrupts &= ~registers::Intr_RxHigh;
 
     // Intr_TxLow is special, we only signal it if we've filled up the fifo
     // and then dropped below the low watermark
     if (txFull)
         txFull = false;
     else
-        interrupts &= ~Regs::Intr_TxLow;
+        interrupts &= ~registers::Intr_TxLow;
 
     if (interrupts) {
         Tick when = curTick();
-        if ((interrupts & Regs::Intr_NoDelay) == 0)
+        if ((interrupts & registers::Intr_NoDelay) == 0)
             when += intrDelay;
         cpuIntrPost(when);
     }
@@ -468,7 +439,7 @@ Device::devIntrPost(uint32_t interrupts)
 void
 Device::devIntrClear(uint32_t interrupts)
 {
-    if ((interrupts & Regs::Intr_Res))
+    if ((interrupts & registers::Intr_Res))
         panic("Cannot clear a reserved interrupt");
 
     regs.IntrStatus &= ~interrupts;
@@ -535,7 +506,9 @@ Base::cpuIntrPost(Tick when)
 
     if (intrEvent)
         intrEvent->squash();
-    intrEvent = new IntrEvent(this, true);
+
+    intrEvent = new EventFunctionWrapper([this]{ cpuInterrupt(); },
+                                         name(), true);
     schedule(intrEvent, intrTick);
 }
 
@@ -594,8 +567,8 @@ Device::changeConfig(uint32_t newconf)
 
     regs.Config = newconf;
 
-    if ((changed & Regs::Config_IntEn)) {
-        cpuIntrEnable = regs.Config & Regs::Config_IntEn;
+    if ((changed & registers::Config_IntEn)) {
+        cpuIntrEnable = regs.Config & registers::Config_IntEn;
         if (cpuIntrEnable) {
             if (regs.IntrStatus & regs.IntrMask)
                 cpuIntrPost(curTick());
@@ -604,14 +577,14 @@ Device::changeConfig(uint32_t newconf)
         }
     }
 
-    if ((changed & Regs::Config_TxEn)) {
-        txEnable = regs.Config & Regs::Config_TxEn;
+    if ((changed & registers::Config_TxEn)) {
+        txEnable = regs.Config & registers::Config_TxEn;
         if (txEnable)
             txKick();
     }
 
-    if ((changed & Regs::Config_RxEn)) {
-        rxEnable = regs.Config & Regs::Config_RxEn;
+    if ((changed & registers::Config_RxEn)) {
+        rxEnable = regs.Config & registers::Config_RxEn;
         if (rxEnable)
             rxKick();
     }
@@ -620,51 +593,51 @@ Device::changeConfig(uint32_t newconf)
 void
 Device::command(uint32_t command)
 {
-    if (command & Regs::Command_Intr)
-        devIntrPost(Regs::Intr_Soft);
+    if (command & registers::Command_Intr)
+        devIntrPost(registers::Intr_Soft);
 
-    if (command & Regs::Command_Reset)
+    if (command & registers::Command_Reset)
         reset();
 }
 
 void
 Device::reset()
 {
-    using namespace Regs;
+    using namespace registers;
 
     memset(&regs, 0, sizeof(regs));
 
     regs.Config = 0;
-    if (params()->rx_thread)
+    if (params().rx_thread)
         regs.Config |= Config_RxThread;
-    if (params()->tx_thread)
+    if (params().tx_thread)
         regs.Config |= Config_TxThread;
-    if (params()->rss)
+    if (params().rss)
         regs.Config |= Config_RSS;
-    if (params()->zero_copy)
+    if (params().zero_copy)
         regs.Config |= Config_ZeroCopy;
-    if (params()->delay_copy)
+    if (params().delay_copy)
         regs.Config |= Config_DelayCopy;
-    if (params()->virtual_addr)
+    if (params().virtual_addr)
         regs.Config |= Config_Vaddr;
 
-    if (params()->delay_copy && params()->zero_copy)
+    if (params().delay_copy && params().zero_copy)
         panic("Can't delay copy and zero copy");
 
     regs.IntrMask = Intr_Soft | Intr_RxHigh | Intr_RxPacket | Intr_TxLow;
-    regs.RxMaxCopy = params()->rx_max_copy;
-    regs.TxMaxCopy = params()->tx_max_copy;
-    regs.ZeroCopySize = params()->zero_copy_size;
-    regs.ZeroCopyMark = params()->zero_copy_threshold;
-    regs.VirtualCount = params()->virtual_count;
-    regs.RxMaxIntr = params()->rx_max_intr;
-    regs.RxFifoSize = params()->rx_fifo_size;
-    regs.TxFifoSize = params()->tx_fifo_size;
-    regs.RxFifoLow = params()->rx_fifo_low_mark;
-    regs.TxFifoLow = params()->tx_fifo_threshold;
-    regs.RxFifoHigh = params()->rx_fifo_threshold;
-    regs.TxFifoHigh = params()->tx_fifo_high_mark;
-    regs.HwAddr = params()->hardware_address;
+    regs.RxMaxCopy = params().rx_max_copy;
+    regs.TxMaxCopy = params().tx_max_copy;
+    regs.ZeroCopySize = params().zero_copy_size;
+    regs.ZeroCopyMark = params().zero_copy_threshold;
+    regs.VirtualCount = params().virtual_count;
+    regs.RxMaxIntr = params().rx_max_intr;
+    regs.RxFifoSize = params().rx_fifo_size;
+    regs.TxFifoSize = params().tx_fifo_size;
+    regs.RxFifoLow = params().rx_fifo_low_mark;
+    regs.TxFifoLow = params().tx_fifo_threshold;
+    regs.RxFifoHigh = params().rx_fifo_threshold;
+    regs.TxFifoHigh = params().tx_fifo_high_mark;
+    regs.HwAddr = params().hardware_address;
 
     if (regs.RxMaxCopy < regs.ZeroCopyMark)
         panic("Must be able to copy at least as many bytes as the threshold");
@@ -747,12 +720,12 @@ Device::rxKick()
 
     switch (rxState) {
       case rxFifoBlock:
-        if (DTRACE(EthernetSM)) {
+        if (debug::EthernetSM) {
             PacketFifo::iterator end = rxFifo.end();
             int size = virtualRegs.size();
             for (int i = 0; i < size; ++i) {
                 VirtualReg *vn = &virtualRegs[i];
-                bool busy = Regs::get_RxDone_Busy(vn->RxDone);
+                bool busy = registers::get_RxDone_Busy(vn->RxDone);
                 if (vn->rxIndex != end) {
 #ifndef NDEBUG
                     bool dirty = vn->rxPacketOffset > 0;
@@ -795,11 +768,11 @@ Device::rxKick()
             rxState = rxBeginCopy;
 
             int vnic_distance = rxFifo.countPacketsBefore(vnic->rxIndex);
-            totalVnicDistance += vnic_distance;
-            numVnicDistance += 1;
-            if (vnic_distance > _maxVnicDistance) {
-                maxVnicDistance = vnic_distance;
-                _maxVnicDistance = vnic_distance;
+            sinicDeviceStats.totalVnicDistance += vnic_distance;
+            sinicDeviceStats.numVnicDistance += 1;
+            if (vnic_distance > sinicDeviceStats._maxVnicDistance) {
+                sinicDeviceStats.maxVnicDistance = vnic_distance;
+                sinicDeviceStats._maxVnicDistance = vnic_distance;
             }
 
             break;
@@ -836,11 +809,11 @@ Device::rxKick()
             IpPtr ip(vnic->rxIndex->packet);
             if (ip) {
                 DPRINTF(Ethernet, "ID is %d\n", ip->id());
-                vnic->rxDoneData |= Regs::RxDone_IpPacket;
-                rxIpChecksums++;
+                vnic->rxDoneData |= registers::RxDone_IpPacket;
+                etherDeviceStats.rxIpChecksums++;
                 if (cksum(ip) != 0) {
                     DPRINTF(EthernetCksum, "Rx IP Checksum Error\n");
-                    vnic->rxDoneData |= Regs::RxDone_IpError;
+                    vnic->rxDoneData |= registers::RxDone_IpError;
                 }
                 TcpPtr tcp(ip);
                 UdpPtr udp(ip);
@@ -849,18 +822,18 @@ Device::rxKick()
                             "Src Port=%d, Dest Port=%d, Seq=%d, Ack=%d\n",
                             tcp->sport(), tcp->dport(), tcp->seq(),
                             tcp->ack());
-                    vnic->rxDoneData |= Regs::RxDone_TcpPacket;
-                    rxTcpChecksums++;
+                    vnic->rxDoneData |= registers::RxDone_TcpPacket;
+                    etherDeviceStats.rxTcpChecksums++;
                     if (cksum(tcp) != 0) {
                         DPRINTF(EthernetCksum, "Rx TCP Checksum Error\n");
-                        vnic->rxDoneData |= Regs::RxDone_TcpError;
+                        vnic->rxDoneData |= registers::RxDone_TcpError;
                     }
                 } else if (udp) {
-                    vnic->rxDoneData |= Regs::RxDone_UdpPacket;
-                    rxUdpChecksums++;
+                    vnic->rxDoneData |= registers::RxDone_UdpPacket;
+                    etherDeviceStats.rxUdpChecksums++;
                     if (cksum(udp) != 0) {
                         DPRINTF(EthernetCksum, "Rx UDP Checksum Error\n");
-                        vnic->rxDoneData |= Regs::RxDone_UdpError;
+                        vnic->rxDoneData |= registers::RxDone_UdpError;
                     }
                 }
             }
@@ -872,17 +845,17 @@ Device::rxKick()
         if (dmaPending() || drainState() != DrainState::Running)
             goto exit;
 
-        rxDmaAddr = pciToDma(Regs::get_RxData_Addr(vnic->RxData));
-        rxDmaLen = min<unsigned>(Regs::get_RxData_Len(vnic->RxData),
-                                 vnic->rxPacketBytes);
+        rxDmaAddr = pciToDma(registers::get_RxData_Addr(vnic->RxData));
+        rxDmaLen = std::min<unsigned>(registers::get_RxData_Len(vnic->RxData),
+                                      vnic->rxPacketBytes);
 
         /*
          * if we're doing zero/delay copy and we're below the fifo
          * threshold, see if we should try to do the zero/defer copy
          */
-        if ((Regs::get_Config_ZeroCopy(regs.Config) ||
-             Regs::get_Config_DelayCopy(regs.Config)) &&
-            !Regs::get_RxData_NoDelay(vnic->RxData) && rxLow) {
+        if ((registers::get_Config_ZeroCopy(regs.Config) ||
+             registers::get_Config_DelayCopy(regs.Config)) &&
+            !registers::get_RxData_NoDelay(vnic->RxData) && rxLow) {
             if (rxDmaLen > regs.ZeroCopyMark)
                 rxDmaLen = regs.ZeroCopySize;
         }
@@ -902,7 +875,7 @@ Device::rxKick()
 
       case rxCopyDone:
         vnic->RxDone = vnic->rxDoneData;
-        vnic->RxDone |= Regs::RxDone_Complete;
+        vnic->RxDone |= registers::RxDone_Complete;
         rxBusyCount--;
 
         if (vnic->rxPacketBytes == rxDmaLen) {
@@ -910,7 +883,8 @@ Device::rxKick()
                 rxDirtyCount--;
 
             // Packet is complete.  Indicate how many bytes were copied
-            vnic->RxDone = Regs::set_RxDone_CopyLen(vnic->RxDone, rxDmaLen);
+            vnic->RxDone =
+                registers::set_RxDone_CopyLen(vnic->RxDone, rxDmaLen);
 
             DPRINTF(EthernetSM,
                     "rxKick: packet complete on vnic %d (rxunique %d)\n",
@@ -924,8 +898,8 @@ Device::rxKick()
 
             vnic->rxPacketBytes -= rxDmaLen;
             vnic->rxPacketOffset += rxDmaLen;
-            vnic->RxDone |= Regs::RxDone_More;
-            vnic->RxDone = Regs::set_RxDone_CopyLen(vnic->RxDone,
+            vnic->RxDone |= registers::RxDone_More;
+            vnic->RxDone = registers::set_RxDone_CopyLen(vnic->RxDone,
                                                     vnic->rxPacketBytes);
             DPRINTF(EthernetSM,
                     "rxKick: packet not complete on vnic %d (rxunique %d): "
@@ -937,7 +911,7 @@ Device::rxKick()
         rxState = rxBusy.empty() && rxList.empty() ? rxIdle : rxFifoBlock;
 
         if (rxFifo.empty()) {
-            devIntrPost(Regs::Intr_RxEmpty);
+            devIntrPost(registers::Intr_RxEmpty);
             rxEmpty = true;
         }
 
@@ -947,7 +921,7 @@ Device::rxKick()
         if (rxFifo.size() > regs.RxFifoHigh)
             rxLow = false;
 
-        devIntrPost(Regs::Intr_RxDMA);
+        devIntrPost(registers::Intr_RxDMA);
         break;
 
       default:
@@ -1001,7 +975,7 @@ Device::transmit()
 
     txFifo.pop();
 #if TRACING_ON
-    if (DTRACE(Ethernet)) {
+    if (debug::Ethernet) {
         IpPtr ip(packet);
         if (ip) {
             DPRINTF(Ethernet, "ID is %d\n", ip->id());
@@ -1017,15 +991,15 @@ Device::transmit()
 #endif
 
     DDUMP(EthernetData, packet->data, packet->length);
-    txBytes += packet->length;
-    txPackets++;
+    etherDeviceStats.txBytes += packet->length;
+    etherDeviceStats.txPackets++;
 
     DPRINTF(Ethernet, "Packet Transmit: successful txFifo Available %d\n",
             txFifo.avail());
 
-    interrupts = Regs::Intr_TxPacket;
+    interrupts = registers::Intr_TxPacket;
     if (txFifo.size() < regs.TxFifoLow)
-        interrupts |= Regs::Intr_TxLow;
+        interrupts |= registers::Intr_TxLow;
     devIntrPost(interrupts);
 }
 
@@ -1051,15 +1025,15 @@ Device::txKick()
 
     switch (txState) {
       case txFifoBlock:
-        assert(Regs::get_TxDone_Busy(vnic->TxDone));
+        assert(registers::get_TxDone_Busy(vnic->TxDone));
         if (!txPacket) {
             // Grab a new packet from the fifo.
-            txPacket = make_shared<EthPacketData>(16384);
+            txPacket = std::make_shared<EthPacketData>(16384);
             txPacketOffset = 0;
         }
 
         if (txFifo.avail() - txPacket->length <
-            Regs::get_TxData_Len(vnic->TxData)) {
+            registers::get_TxData_Len(vnic->TxData)) {
             DPRINTF(EthernetSM, "transmit fifo full.  Nothing to do.\n");
             goto exit;
         }
@@ -1071,8 +1045,8 @@ Device::txKick()
         if (dmaPending() || drainState() != DrainState::Running)
             goto exit;
 
-        txDmaAddr = pciToDma(Regs::get_TxData_Addr(vnic->TxData));
-        txDmaLen = Regs::get_TxData_Len(vnic->TxData);
+        txDmaAddr = pciToDma(registers::get_TxData_Addr(vnic->TxData));
+        txDmaLen = registers::get_TxData_Len(vnic->TxData);
         txDmaData = txPacket->data + txPacketOffset;
         txState = txCopy;
 
@@ -1084,50 +1058,50 @@ Device::txKick()
         goto exit;
 
       case txCopyDone:
-        vnic->TxDone = txDmaLen | Regs::TxDone_Complete;
+        vnic->TxDone = txDmaLen | registers::TxDone_Complete;
         txPacket->simLength += txDmaLen;
         txPacket->length += txDmaLen;
-        if ((vnic->TxData & Regs::TxData_More)) {
+        if ((vnic->TxData & registers::TxData_More)) {
             txPacketOffset += txDmaLen;
             txState = txIdle;
-            devIntrPost(Regs::Intr_TxDMA);
+            devIntrPost(registers::Intr_TxDMA);
             break;
         }
 
         assert(txPacket->length <= txFifo.avail());
-        if ((vnic->TxData & Regs::TxData_Checksum)) {
+        if ((vnic->TxData & registers::TxData_Checksum)) {
             IpPtr ip(txPacket);
             if (ip) {
                 TcpPtr tcp(ip);
                 if (tcp) {
                     tcp->sum(0);
                     tcp->sum(cksum(tcp));
-                    txTcpChecksums++;
+                    etherDeviceStats.txTcpChecksums++;
                 }
 
                 UdpPtr udp(ip);
                 if (udp) {
                     udp->sum(0);
                     udp->sum(cksum(udp));
-                    txUdpChecksums++;
+                    etherDeviceStats.txUdpChecksums++;
                 }
 
                 ip->sum(0);
                 ip->sum(cksum(ip));
-                txIpChecksums++;
+                etherDeviceStats.txIpChecksums++;
             }
         }
 
         txFifo.push(txPacket);
         if (txFifo.avail() < regs.TxMaxCopy) {
-            devIntrPost(Regs::Intr_TxFull);
+            devIntrPost(registers::Intr_TxFull);
             txFull = true;
         }
         txPacket = 0;
         transmit();
         txList.pop_front();
         txState = txList.empty() ? txIdle : txFifoBlock;
-        devIntrPost(Regs::Intr_TxDMA);
+        devIntrPost(registers::Intr_TxDMA);
         break;
 
       default:
@@ -1163,53 +1137,19 @@ Device::transferDone()
 bool
 Device::rxFilter(const EthPacketPtr &packet)
 {
-    if (!Regs::get_Config_Filter(regs.Config))
+    if (!registers::get_Config_Filter(regs.Config))
         return false;
 
     panic("receive filter not implemented\n");
     bool drop = true;
-
-#if 0
-    string type;
-
-    EthHdr *eth = packet->eth();
-    if (eth->unicast()) {
-        // If we're accepting all unicast addresses
-        if (acceptUnicast)
-            drop = false;
-
-        // If we make a perfect match
-        if (acceptPerfect && params->eaddr == eth.dst())
-            drop = false;
-
-        if (acceptArp && eth->type() == ETH_TYPE_ARP)
-            drop = false;
-
-    } else if (eth->broadcast()) {
-        // if we're accepting broadcasts
-        if (acceptBroadcast)
-            drop = false;
-
-    } else if (eth->multicast()) {
-        // if we're accepting all multicasts
-        if (acceptMulticast)
-            drop = false;
-
-    }
-
-    if (drop) {
-        DPRINTF(Ethernet, "rxFilter drop\n");
-        DDUMP(EthernetData, packet->data, packet->length);
-    }
-#endif
     return drop;
 }
 
 bool
 Device::recvPacket(EthPacketPtr packet)
 {
-    rxBytes += packet->length;
-    rxPackets++;
+    etherDeviceStats.rxBytes += packet->length;
+    etherDeviceStats.rxPackets++;
 
     DPRINTF(Ethernet, "Receiving packet from wire, rxFifo Available is %d\n",
             rxFifo.avail());
@@ -1225,7 +1165,7 @@ Device::recvPacket(EthPacketPtr packet)
     }
 
     if (rxFifo.size() >= regs.RxFifoHigh)
-        devIntrPost(Regs::Intr_RxHigh);
+        devIntrPost(registers::Intr_RxHigh);
 
     if (!rxFifo.push(packet)) {
         DPRINTF(Ethernet,
@@ -1238,7 +1178,7 @@ Device::recvPacket(EthPacketPtr packet)
     if (rxFifoPtr == rxFifo.end())
         --rxFifoPtr;
 
-    devIntrPost(Regs::Intr_RxPacket);
+    devIntrPost(registers::Intr_RxPacket);
     rxKick();
     return true;
 }
@@ -1297,7 +1237,8 @@ Base::unserialize(CheckpointIn &cp)
     Tick intrEventTick;
     UNSERIALIZE_SCALAR(intrEventTick);
     if (intrEventTick) {
-        intrEvent = new IntrEvent(this, true);
+        intrEvent = new EventFunctionWrapper([this]{ cpuInterrupt(); },
+                                             name(), true);
         schedule(intrEvent, intrEventTick);
     }
 }
@@ -1496,7 +1437,7 @@ Device::unserialize(CheckpointIn &cp)
     UNSERIALIZE_SCALAR(txPacketExists);
     txPacket = 0;
     if (txPacketExists) {
-        txPacket = make_shared<EthPacketData>();
+        txPacket = std::make_shared<EthPacketData>(16384);
         txPacket->unserialize("txPacket", cp);
         UNSERIALIZE_SCALAR(txPacketOffset);
         UNSERIALIZE_SCALAR(txPacketBytes);
@@ -1554,10 +1495,5 @@ Device::unserialize(CheckpointIn &cp)
 
 }
 
-} // namespace Sinic
-
-Sinic::Device *
-SinicParams::create()
-{
-    return new Sinic::Device(this);
-}
+} // namespace sinic
+} // namespace gem5

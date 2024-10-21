@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, 2015-2016 ARM Limited
+ * Copyright (c) 2012-2013, 2015-2016, 2018 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -36,9 +36,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Erik Hallnor
- *          Andreas Sandberg
  */
 
 /** @file
@@ -47,11 +44,18 @@
 
 #include "mem/cache/mshr_queue.hh"
 
-using namespace std;
+#include <cassert>
+
+#include "debug/MSHR.hh"
+#include "mem/cache/mshr.hh"
+
+namespace gem5
+{
 
 MSHRQueue::MSHRQueue(const std::string &_label,
-                     int num_entries, int reserve, int demand_reserve)
-    : Queue<MSHR>(_label, num_entries, reserve),
+                     int num_entries, int reserve,
+                     int demand_reserve, std::string cache_name = "")
+    : Queue<MSHR>(_label, num_entries, reserve, cache_name + ".mshr_queue"),
       demandReserve(demand_reserve)
 {}
 
@@ -64,6 +68,9 @@ MSHRQueue::allocate(Addr blk_addr, unsigned blk_size, PacketPtr pkt,
     assert(mshr->getNumTargets() == 0);
     freeList.pop_front();
 
+    DPRINTF(MSHR, "Allocating new MSHR. Number in use will be %lu/%lu\n",
+            allocatedList.size() + 1, numEntries);
+
     mshr->allocate(blk_addr, blk_size, pkt, when_ready, order, alloc_on_fill);
     mshr->allocIter = allocatedList.insert(allocatedList.end(), mshr);
     mshr->readyIter = addToReadyList(mshr);
@@ -73,6 +80,17 @@ MSHRQueue::allocate(Addr blk_addr, unsigned blk_size, PacketPtr pkt,
 }
 
 void
+MSHRQueue::deallocate(MSHR* mshr)
+{
+
+    DPRINTF(MSHR, "Deallocating all targets: %s", mshr->print());
+    Queue<MSHR>::deallocate(mshr);
+    DPRINTF(MSHR, "MSHR deallocated. Number in use: %lu/%lu\n",
+            allocatedList.size(), numEntries);
+}
+
+
+void
 MSHRQueue::moveToFront(MSHR *mshr)
 {
     if (!mshr->inService) {
@@ -80,6 +98,17 @@ MSHRQueue::moveToFront(MSHR *mshr)
         readyList.erase(mshr->readyIter);
         mshr->readyIter = readyList.insert(readyList.begin(), mshr);
     }
+}
+
+void
+MSHRQueue::delay(MSHR *mshr, Tick delay_ticks)
+{
+    mshr->delay(delay_ticks);
+    auto it = std::find_if(mshr->readyIter, readyList.end(),
+                            [mshr] (const MSHR* _mshr) {
+                                return mshr->readyTime >= _mshr->readyTime;
+                            });
+    readyList.splice(it, readyList, mshr->readyIter);
 }
 
 void
@@ -118,3 +147,5 @@ MSHRQueue::forceDeallocateTarget(MSHR *mshr)
     // Notify if MSHR queue no longer full
     return was_full && !isFull();
 }
+
+} // namespace gem5

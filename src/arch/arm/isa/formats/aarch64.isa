@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2016 ARM Limited
+// Copyright (c) 2011-2022 Arm Limited
 // All rights reserved
 //
 // The license below extends only to copyright in the software and shall
@@ -32,17 +32,12 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-// Authors: Gabe Black
-//          Thomas Grocutt
-//          Mbou Eyole
-//          Giacomo Gabrielli
 
 output header {{
 namespace Aarch64
 {
     StaticInstPtr decodeDataProcImm(ExtMachInst machInst);
-    StaticInstPtr decodeBranchExcSys(ExtMachInst machInst);
+    StaticInstPtr decodeBranchExcSys(const Decoder &dec, ExtMachInst machInst);
     StaticInstPtr decodeLoadsStores(ExtMachInst machInst);
     StaticInstPtr decodeDataProcReg(ExtMachInst machInst);
 
@@ -52,6 +47,10 @@ namespace Aarch64
     template <typename DecoderFeatures>
     StaticInstPtr decodeAdvSIMD(ExtMachInst machInst);
     StaticInstPtr decodeAdvSIMDScalar(ExtMachInst machInst);
+
+    StaticInstPtr decodeSveInt(ExtMachInst machInst);
+    StaticInstPtr decodeSveFp(ExtMachInst machInst);
+    StaticInstPtr decodeSveMem(ExtMachInst machInst);
 
     StaticInstPtr decodeGem5Ops(ExtMachInst machInst);
 }
@@ -63,11 +62,11 @@ namespace Aarch64
     StaticInstPtr
     decodeDataProcImm(ExtMachInst machInst)
     {
-        IntRegIndex rd = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-        IntRegIndex rdsp = makeSP(rd);
-        IntRegIndex rdzr = makeZero(rd);
-        IntRegIndex rn = (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-        IntRegIndex rnsp = makeSP(rn);
+        RegIndex rd = (RegIndex)(uint32_t)bits(machInst, 4, 0);
+        RegIndex rdsp = makeSP(rd);
+        RegIndex rdzr = makeZero(rd);
+        RegIndex rn = (RegIndex)(uint32_t)bits(machInst, 9, 5);
+        RegIndex rnsp = makeSP(rn);
 
         uint8_t opc = bits(machInst, 30, 29);
         bool sf = bits(machInst, 31);
@@ -82,9 +81,10 @@ namespace Aarch64
             uint64_t immhi = bits(machInst, 23, 5);
             uint64_t imm = (immlo << 0) | (immhi << 2);
             if (bits(machInst, 31) == 0)
-                return new AdrXImm(machInst, rdzr, INTREG_ZERO, sext<21>(imm));
+                return new AdrXImm(machInst, rdzr, int_reg::Zero,
+                                   sext<21>(imm));
             else
-                return new AdrpXImm(machInst, rdzr, INTREG_ZERO,
+                return new AdrpXImm(machInst, rdzr, int_reg::Zero,
                                     sext<33>(imm << 12));
           }
           case 0x2:
@@ -108,6 +108,8 @@ namespace Aarch64
                 return new SubXImm(machInst, rdsp, rnsp, imm);
               case 0x3:
                 return new SubXImmCc(machInst, rdzr, rnsp, imm);
+              default:
+                GEM5_UNREACHABLE;
             }
           }
           case 0x4:
@@ -150,12 +152,14 @@ namespace Aarch64
                 return new EorXImm(machInst, rdsp, rn, imm);
               case 0x3:
                 return new AndXImmCc(machInst, rdzr, rn, imm);
+              default:
+                GEM5_UNREACHABLE;
             }
           }
           case 0x5:
           {
-            IntRegIndex rd = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-            IntRegIndex rdzr = makeZero(rd);
+            RegIndex rd = (RegIndex)(uint32_t)bits(machInst, 4, 0);
+            RegIndex rdzr = makeZero(rd);
             uint32_t imm16 = bits(machInst, 20, 5);
             uint32_t hw = bits(machInst, 22, 21);
             switch (opc) {
@@ -167,6 +171,8 @@ namespace Aarch64
                 return new Movz(machInst, rdzr, imm16, hw * 16);
               case 0x3:
                 return new Movk(machInst, rdzr, imm16, hw * 16);
+              default:
+                GEM5_UNREACHABLE;
             }
           }
           case 0x6:
@@ -181,10 +187,12 @@ namespace Aarch64
                 return new Ubfm64(machInst, rdzr, rn, immr, imms);
               case 0x3:
                 return new Unknown64(machInst);
+              default:
+                GEM5_UNREACHABLE;
             }
           case 0x7:
           {
-            IntRegIndex rm = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
+            RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
             if (opc || bits(machInst, 21))
                 return new Unknown64(machInst);
             else
@@ -200,7 +208,7 @@ output decoder {{
 namespace Aarch64
 {
     StaticInstPtr
-    decodeBranchExcSys(ExtMachInst machInst)
+    decodeBranchExcSys(const Decoder &dec, ExtMachInst machInst)
     {
         switch (bits(machInst, 30, 29)) {
           case 0x0:
@@ -213,7 +221,7 @@ namespace Aarch64
           }
           case 0x1:
           {
-            IntRegIndex rt = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
+            RegIndex rt = (RegIndex)(uint8_t)bits(machInst, 4, 0);
             if (bits(machInst, 25) == 0) {
                 int64_t imm = sext<19>(bits(machInst, 23, 5)) << 2;
                 if (bits(machInst, 24) == 0)
@@ -242,21 +250,27 @@ namespace Aarch64
                     (ConditionCode)(uint8_t)(bits(machInst, 3, 0));
                 return new BCond64(machInst, imm, condCode);
             } else if (bits(machInst, 25, 24) == 0x0) {
+
                 if (bits(machInst, 4, 2))
                     return new Unknown64(machInst);
+
+                auto imm16 = bits(machInst, 20, 5);
                 uint8_t decVal = (bits(machInst, 1, 0) << 0) |
                                  (bits(machInst, 23, 21) << 2);
+
                 switch (decVal) {
                   case 0x01:
-                    return new Svc64(machInst);
+                    return new Svc64(machInst, imm16);
                   case 0x02:
-                    return new Hvc64(machInst);
+                    return new Hvc64(machInst, imm16);
                   case 0x03:
-                    return new Smc64(machInst);
+                    return new Smc64(machInst, imm16);
                   case 0x04:
-                    return new FailUnimplemented("brk", machInst);
+                    return new Brk64(machInst, imm16);
                   case 0x08:
-                    return new FailUnimplemented("hlt", machInst);
+                    return new Hlt64(machInst, imm16);
+                  case 0x0c:
+                    return new Tcancel64(machInst, imm16);
                   case 0x15:
                     return new FailUnimplemented("dcps1", machInst);
                   case 0x16:
@@ -274,34 +288,131 @@ namespace Aarch64
                 uint8_t crn = bits(machInst, 15, 12);
                 uint8_t crm = bits(machInst, 11, 8);
                 uint8_t op2 = bits(machInst, 7, 5);
-                IntRegIndex rt = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
+                RegIndex rt = (RegIndex)(uint8_t)bits(machInst, 4, 0);
                 switch (op0) {
                   case 0x0:
-                    if (rt != 0x1f || l)
+                    // early out for TME
+                    if (crn == 0x3 && op1 == 0x3 && op2 == 0x3) {
+                        switch (crm) {
+                            case 0x0:
+                              if (rt == 0b11111)
+                                return new Tcommit64(machInst);
+                              else
+                                return new Tstart64(machInst, rt);
+                            case 0x1:
+                              return new Ttest64(machInst, rt);
+                            default:
+                              return new Unknown64(machInst);
+                        }
+                    }
+                    else if (rt != 0x1f || l)
                         return new Unknown64(machInst);
                     if (crn == 0x2 && op1 == 0x3) {
-                        switch (op2) {
+                        switch (crm) {
                           case 0x0:
-                            return new NopInst(machInst);
+                            switch (op2) {
+                              case 0x0:
+                                return new NopInst(machInst);
+                              case 0x1:
+                                return new YieldInst(machInst);
+                              case 0x2:
+                                return new WfeInst(machInst);
+                              case 0x3:
+                                return new WfiInst(machInst);
+                              case 0x4:
+                                return new SevInst(machInst);
+                              case 0x5:
+                                return new SevlInst(machInst);
+                              case 0x7:
+                                return new Xpaclri(machInst, int_reg::X30);
+                            }
+                            break;
                           case 0x1:
-                            return new YieldInst(machInst);
+                            switch (op2) {
+                              case 0x0:
+                                return new Pacia1716(machInst, int_reg::X17,
+                                                               int_reg::X16);
+                              case 0x2:
+                                return new Pacib1716(machInst, int_reg::X17,
+                                                               int_reg::X16);
+                              case 0x4:
+                                return new Autia1716(machInst, int_reg::X17,
+                                                               int_reg::X16);
+                              case 0x6:
+                                return new Autib1716(machInst, int_reg::X17,
+                                                               int_reg::X16);
+                            }
+                            break;
                           case 0x2:
-                            return new WfeInst(machInst);
+                            switch (op2) {
+                              case 0x0:
+                                return new WarnUnimplemented(
+                                        "esb", machInst);
+                              case 0x1:
+                                return new WarnUnimplemented(
+                                        "psb csync", machInst);
+                              case 0x2:
+                                return new WarnUnimplemented(
+                                        "tsb csync", machInst);
+                              case 0x4:
+                                return new WarnUnimplemented(
+                                        "csdb", machInst);
+                            }
+                            break;
                           case 0x3:
-                            return new WfiInst(machInst);
+                            switch (op2) {
+                              case 0x0:
+                                return new Paciaz(machInst,
+                                         int_reg::X30, int_reg::Zero);
+                              case 0x1:
+                                return new Paciasp(machInst,
+                                         int_reg::X30, int_reg::Spx);
+                              case 0x2:
+                                return new Pacibz(machInst,
+                                         int_reg::X30, int_reg::Zero);
+                              case 0x3:
+                                return new Pacibsp(machInst,
+                                         int_reg::X30, int_reg::Spx);
+                              case 0x4:
+                                return new Autiaz(machInst,
+                                         int_reg::X30, int_reg::Zero);
+                              case 0x5:
+                                return new Autiasp(machInst,
+                                         int_reg::X30, int_reg::Spx);
+                              case 0x6:
+                                return new Autibz(machInst,
+                                         int_reg::X30, int_reg::Zero);
+                              case 0x7:
+                                return new Autibsp(machInst,
+                                         int_reg::X30, int_reg::Spx);
+                            }
+                            break;
                           case 0x4:
-                            return new SevInst(machInst);
-                          case 0x5:
-                            return new SevlInst(machInst);
-                          default:
-                            return new Unknown64(machInst);
+                            switch (op2 & 0x1) {
+                              case 0x0:
+                                return new WarnUnimplemented(
+                                        "bti", machInst);
+                            }
+                            break;
                         }
+                        return new WarnUnimplemented(
+                                "unallocated_hint", machInst);
                     } else if (crn == 0x3 && op1 == 0x3) {
                         switch (op2) {
                           case 0x2:
                             return new Clrex64(machInst);
                           case 0x4:
-                            return new Dsb64(machInst);
+                            switch (bits(crm, 3, 2)) {
+                              case 0x1: // Non-Shareable
+                                return new Dsb64Local(machInst);
+                              case 0x0: // OuterShareable
+                              case 0x2: // InnerShareable
+                              case 0x3: // FullSystem
+                                return new Dsb64Shareable(
+                                    machInst, dec.dvmEnabled);
+                              default:
+                                GEM5_UNREACHABLE;
+                            }
                           case 0x5:
                             return new Dmb64(machInst);
                           case 0x6:
@@ -310,28 +421,41 @@ namespace Aarch64
                             return new Unknown64(machInst);
                         }
                     } else if (crn == 0x4) {
-                        // MSR immediate
+                        // MSR immediate: moving immediate value to selected
+                        // bits of the PSTATE
                         switch (op1 << 3 | op2) {
+                          case 0x0:
+                            // CFINV
+                            return new Cfinv(machInst);
+                          case 0x1:
+                            // XAFLAG
+                            return new Xaflag(machInst);
+                          case 0x2:
+                            // AXFLAG
+                            return new Axflag(machInst);
+                          case 0x3:
+                            // UAO
+                            return new MsrImm64(
+                                machInst, MISCREG_UAO, crm);
+                          case 0x4:
+                            // PAN
+                            return new MsrImm64(
+                                machInst, MISCREG_PAN, crm);
                           case 0x5:
                             // SP
-                            return new MsrSP64(machInst,
-                                               (IntRegIndex) MISCREG_SPSEL,
-                                               INTREG_ZERO,
-                                               crm & 0x1);
+                            return new MsrImm64(
+                                machInst, MISCREG_SPSEL, crm);
+                          case 0x1b:
+                            // SVE SVCR - SMSTART/SMSTOP
+                            return decodeSmeMgmt(machInst);
                           case 0x1e:
                             // DAIFSet
-                            return new MsrDAIFSet64(
-                                machInst,
-                                (IntRegIndex) MISCREG_DAIF,
-                                INTREG_ZERO,
-                                crm);
+                            return new MsrImmDAIFSet64(
+                                machInst, MISCREG_DAIF, crm);
                           case 0x1f:
                             // DAIFClr
-                            return new MsrDAIFClr64(
-                                machInst,
-                                (IntRegIndex) MISCREG_DAIF,
-                                INTREG_ZERO,
-                                crm);
+                            return new MsrImmDAIFClr64(
+                                machInst, MISCREG_DAIF, crm);
                           default:
                             return new Unknown64(machInst);
                         }
@@ -347,74 +471,181 @@ namespace Aarch64
                     bool read = l;
                     MiscRegIndex miscReg =
                         decodeAArch64SysReg(op0, op1, crn, crm, op2);
-                    if (read) {
-                        if ((miscReg == MISCREG_DC_CIVAC_Xt) ||
-                            (miscReg == MISCREG_DC_CVAC_Xt) ||
-                            (miscReg == MISCREG_DC_ZVA_Xt)) {
-                            return new Unknown64(machInst);
-                        }
-                    }
+
                     // Check for invalid registers
                     if (miscReg == MISCREG_UNKNOWN) {
-                        return new Unknown64(machInst);
-                    } else if (miscRegInfo[miscReg][MISCREG_IMPLEMENTED]) {
-                        if (miscReg == MISCREG_NZCV) {
-                            if (read)
-                                return new MrsNZCV64(machInst, rt, (IntRegIndex) miscReg);
-                            else
-                                return new MsrNZCV64(machInst, (IntRegIndex) miscReg, rt);
-                        }
-                        uint32_t iss = msrMrs64IssBuild(read, op0, op1, crn, crm, op2, rt);
-                        if (miscReg == MISCREG_DC_ZVA_Xt && !read)
-                            return new Dczva(machInst, rt, (IntRegIndex) miscReg, iss);
+                        auto full_mnemonic =
+                            csprintf("%s op0:%d op1:%d crn:%d crm:%d op2:%d",
+                                     read ? "mrs" : "msr",
+                                     op0, op1, crn, crm, op2);
 
-                        if (read) {
-                            StaticInstPtr si = new Mrs64(machInst, rt, (IntRegIndex) miscReg, iss);
-                            if (miscRegInfo[miscReg][MISCREG_UNVERIFIABLE])
-                                si->setFlag(StaticInst::IsUnverifiable);
-                            return si;
-                        } else
-                            return new Msr64(machInst, (IntRegIndex) miscReg, rt, iss);
-                    } else if (miscRegInfo[miscReg][MISCREG_WARN_NOT_FAIL]) {
-                        std::string full_mnem = csprintf("%s %s",
-                            read ? "mrs" : "msr", miscRegName[miscReg]);
-                        return new WarnUnimplemented(read ? "mrs" : "msr",
-                                                     machInst, full_mnem);
-                    } else {
                         return new FailUnimplemented(read ? "mrs" : "msr",
-                                    machInst,
-                                    csprintf("%s %s",
-                                      read ? "mrs" : "msr",
-                                      miscRegName[miscReg]));
+                            machInst, full_mnemonic);
+
+                    } else if (miscReg == MISCREG_IMPDEF_UNIMPL) {
+                        auto full_mnemonic =
+                            csprintf("%s op0:%d op1:%d crn:%d crm:%d op2:%d",
+                                     read ? "mrs" : "msr",
+                                     op0, op1, crn, crm, op2);
+
+                        return new MiscRegImplDefined64(
+                            read ? "mrs" : "msr",
+                            machInst, MiscRegNum64(op0, op1, crn, crm, op2),
+                            rt, read, full_mnemonic);
+
+                    } else {
+                        if (read) {
+                            switch (miscReg) {
+                              case MISCREG_NZCV:
+                                return new MrsNZCV64(machInst, rt, miscReg);
+                              case MISCREG_DC_CIVAC_Xt:
+                              case MISCREG_DC_CVAC_Xt:
+                              case MISCREG_DC_IVAC_Xt:
+                              case MISCREG_DC_ZVA_Xt:
+                                return new Unknown64(machInst);
+                              default: {
+                                StaticInstPtr si = new Mrs64(machInst, rt, miscReg);
+                                if (lookUpMiscReg[miscReg].info[MISCREG_UNVERIFIABLE])
+                                    si->setFlag(StaticInst::IsUnverifiable);
+                                return si;
+                              }
+                            }
+                        } else {
+                            switch (miscReg) {
+                              case MISCREG_NZCV:
+                                return new MsrNZCV64(machInst, miscReg, rt);
+                              case MISCREG_DC_ZVA_Xt:
+                                return new Dczva(machInst, rt, miscReg);
+                              case MISCREG_DC_CVAU_Xt:
+                                return new Dccvau(machInst, rt, miscReg);
+                              case MISCREG_DC_CVAC_Xt:
+                                return new Dccvac(machInst, rt, miscReg);
+                              case MISCREG_DC_CIVAC_Xt:
+                                return new Dccivac(machInst, rt, miscReg);
+                              case MISCREG_DC_IVAC_Xt:
+                                return new Dcivac(machInst, rt, miscReg);
+                              // 64-bit TLBIs split into "Local"
+                              // and "Shareable"
+                              case MISCREG_TLBI_ALLE3:
+                              case MISCREG_TLBI_ALLE2:
+                              case MISCREG_TLBI_ALLE1:
+                              case MISCREG_TLBI_VMALLS12E1:
+                              case MISCREG_TLBI_VMALLE1:
+                              case MISCREG_TLBI_VAE3_Xt:
+                              case MISCREG_TLBI_VALE3_Xt:
+                              case MISCREG_TLBI_VAE2_Xt:
+                              case MISCREG_TLBI_VALE2_Xt:
+                              case MISCREG_TLBI_VAE1_Xt:
+                              case MISCREG_TLBI_VALE1_Xt:
+                              case MISCREG_TLBI_ASIDE1_Xt:
+                              case MISCREG_TLBI_VAAE1_Xt:
+                              case MISCREG_TLBI_VAALE1_Xt:
+                              case MISCREG_TLBI_IPAS2E1_Xt:
+                              case MISCREG_TLBI_IPAS2LE1_Xt:
+                                return new Tlbi64LocalHub(
+                                  machInst, miscReg, rt);
+                              case MISCREG_TLBI_ALLE3IS:
+                              case MISCREG_TLBI_ALLE2IS:
+                              case MISCREG_TLBI_ALLE1IS:
+                              case MISCREG_TLBI_VMALLS12E1IS:
+                              case MISCREG_TLBI_VMALLE1IS:
+                              case MISCREG_TLBI_VAE3IS_Xt:
+                              case MISCREG_TLBI_VALE3IS_Xt:
+                              case MISCREG_TLBI_VAE2IS_Xt:
+                              case MISCREG_TLBI_VALE2IS_Xt:
+                              case MISCREG_TLBI_VAE1IS_Xt:
+                              case MISCREG_TLBI_VALE1IS_Xt:
+                              case MISCREG_TLBI_ASIDE1IS_Xt:
+                              case MISCREG_TLBI_VAAE1IS_Xt:
+                              case MISCREG_TLBI_VAALE1IS_Xt:
+                              case MISCREG_TLBI_IPAS2E1IS_Xt:
+                              case MISCREG_TLBI_IPAS2LE1IS_Xt:
+                                return new Tlbi64ShareableHub(
+                                  machInst, miscReg, rt, dec.dvmEnabled);
+                              default:
+                                return new Msr64(machInst, miscReg, rt);
+                            }
+                        }
                     }
                   }
                   break;
+                  default:
+                    GEM5_UNREACHABLE;
                 }
             } else if (bits(machInst, 25) == 0x1) {
                 uint8_t opc = bits(machInst, 24, 21);
                 uint8_t op2 = bits(machInst, 20, 16);
-                uint8_t op3 = bits(machInst, 15, 10);
-                IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
+                uint8_t op3 = bits(machInst, 15, 12);
+                RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+                RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 4, 0);
                 uint8_t op4 = bits(machInst, 4, 0);
-                if (op2 != 0x1f || op3 != 0x0 || op4 != 0x0)
+                if (op2 != 0x1f || op3 != 0x0)
                     return new Unknown64(machInst);
                 switch (opc) {
                   case 0x0:
-                    return new Br64(machInst, rn);
+                    if (bits(machInst, 11) == 0)
+                        return new Br64(machInst, rn);
+                    else if (op4 != 0x1f)
+                        return new Unknown64(machInst);
+                    // 24(Z):0, 11(A):1
+                    if (bits(machInst, 10) == 0)
+                        return new Braaz(machInst, rn);
+                    else
+                        return new Brabz(machInst, rn);
                   case 0x1:
-                    return new Blr64(machInst, rn);
+                    if (bits(machInst, 11) == 0)
+                        return new Blr64(machInst, rn);
+                    else if (op4 != 0x1f)
+                        return new Unknown64(machInst);
+                    // 24(Z):0, 11(A):1
+                    if (bits(machInst, 10) == 0)
+                        return new Blraaz(machInst, rn);
+                    else
+                        return new Blrabz(machInst, rn);
                   case 0x2:
-                    return new Ret64(machInst, rn);
+                    if (op4 == 0x1f) {
+                        bool m = bits(machInst, 10);
+                        if (m)
+                            return new Retab(machInst);
+                        else
+                            return new Retaa(machInst);
+                    } else
+                        return new Ret64(machInst, rn);
                   case 0x4:
                     if (rn != 0x1f)
                         return new Unknown64(machInst);
-                    return new Eret64(machInst);
+                    if (bits(machInst, 11) == 0)
+                        return new Eret64(machInst);
+                    else if (op4 != 0x1f)
+                        return new Unknown64(machInst);
+                    // 24(Z):0, 11(A):1
+                    if (bits(machInst, 10) == 0)
+                        return new Eretaa(machInst);
+                    else
+                        return new Eretab(machInst);
                   case 0x5:
                     if (rn != 0x1f)
                         return new Unknown64(machInst);
                     return new FailUnimplemented("dret", machInst);
+                  case 0x8:
+                    if (bits(machInst, 11) == 0)
+                        return new Unknown64(machInst);
+                    if (bits(machInst, 10) == 0)
+                        return new Braa(machInst, rn, makeSP(rm));
+                    else
+                        return new Brab(machInst, rn, makeSP(rm));
+                  case 0x9:
+                    if (bits(machInst, 11) == 0)
+                        return new Unknown64(machInst);
+                    if (bits(machInst, 10) == 0)
+                        return new Blraa(machInst, rn, makeSP(rm));
+                    else
+                        return new Blrab(machInst, rn, makeSP(rm));
+                  default:
+                    return new Unknown64(machInst);
                 }
             }
+          [[fallthrough]];
           default:
             return new Unknown64(machInst);
         }
@@ -427,6 +658,560 @@ output decoder {{
 namespace Aarch64
 {
     StaticInstPtr
+    decodeAtomicArithOp(ExtMachInst machInst)
+    {
+        uint8_t opc  = bits(machInst, 14, 12);
+        uint8_t o3  = bits(machInst, 15);
+        uint8_t size_ar = bits(machInst, 23, 22)<<0 | bits(machInst, 31, 30)<<2;
+        RegIndex rt = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        RegIndex rnsp = makeSP(rn);
+        RegIndex rs = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+        uint8_t  A_rt = bits(machInst, 4, 0)<<0 | bits(machInst, 23)<<5;
+
+        switch(opc) {
+            case 0x0:
+                switch(size_ar){
+                    case 0x0:
+                        if (o3 == 1)
+                            return new SWPB(machInst, rt, rnsp, rs);
+                        else if (A_rt == 0x1f)
+                            return new STADDB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (o3 == 1)
+                            return new SWPLB(machInst, rt, rnsp, rs);
+                        else if (A_rt == 0x1f)
+                            return new STADDLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        if (o3 == 1)
+                            return new SWPAB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        if (o3 == 1)
+                            return new SWPLAB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (o3 == 1)
+                            return new SWPH(machInst, rt, rnsp, rs);
+                        else if (A_rt == 0x1f)
+                            return new STADDH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (o3 == 1)
+                            return new SWPLH(machInst, rt, rnsp, rs);
+                        else if (A_rt == 0x1f)
+                            return new STADDLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        if (o3 == 1)
+                            return new SWPAH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        if (o3 == 1)
+                            return new SWPLAH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (o3 == 1)
+                            return new SWP(machInst, rt, rnsp, rs);
+                        else if (A_rt == 0x1f)
+                            return new STADD(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADD(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (o3 == 1)
+                            return new SWPL(machInst, rt, rnsp, rs);
+                        else if (A_rt == 0x1f)
+                            return new STADDL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        if (o3 == 1)
+                            return new SWPA(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        if (o3 == 1)
+                            return new SWPLA(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (o3 == 1)
+                            return new SWP64(machInst, rt, rnsp, rs);
+
+                        else if (A_rt == 0x1f)
+                            return new STADD64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADD64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (o3 == 1)
+                            return new SWPL64(machInst, rt, rnsp, rs);
+                        else if (A_rt == 0x1f)
+                            return new STADDL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        if (o3 == 1)
+                            return new SWPA64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        if (o3 == 1)
+                            return new SWPLA64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDADDLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            case 0x1:
+                switch(size_ar){
+                    case 0x0:
+                        if (A_rt == 0x1f)
+                            return new STCLRB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLRB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (A_rt == 0x1f)
+                            return new STCLRLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLRLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        return new LDCLRAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        return new LDCLRLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (A_rt == 0x1f)
+                            return new STCLRH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLRH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (A_rt == 0x1f)
+                            return new STCLRLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLRLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        return new LDCLRAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        return new LDCLRLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (A_rt == 0x1f)
+                            return new STCLR(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLR(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (A_rt == 0x1f)
+                            return new STCLRL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLRL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        return new LDCLRA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        return new LDCLRLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (A_rt == 0x1f)
+                            return new STCLR64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLR64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (A_rt == 0x1f)
+                            return new STCLRL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDCLRL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        return new LDCLRA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        return new LDCLRLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            case 0x2:
+                switch(size_ar){
+                    case 0x0:
+                        if (A_rt == 0x1f)
+                            return new STEORB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEORB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (A_rt == 0x1f)
+                            return new STEORLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEORLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        return new LDEORAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        return new LDEORLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (A_rt == 0x1f)
+                            return new STEORH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEORH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (A_rt == 0x1f)
+                            return new STEORLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEORLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        return new LDEORAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        return new LDEORLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (A_rt == 0x1f)
+                            return new STEOR(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEOR(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (A_rt == 0x1f)
+                            return new STEORL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEORL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        return new LDEORA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        return new LDEORLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (A_rt == 0x1f)
+                            return new STEOR64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEOR64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (A_rt == 0x1f)
+                            return new STEORL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDEORL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        return new LDEORA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        return new LDEORLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            case 0x3:
+                switch(size_ar){
+                    case 0x0:
+                        if (A_rt == 0x1f)
+                            return new STSETB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSETB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (A_rt == 0x1f)
+                            return new STSETLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSETLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        return new LDSETAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        return new LDSETLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (A_rt == 0x1f)
+                            return new STSETH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSETH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (A_rt == 0x1f)
+                            return new STSETLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSETLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        return new LDSETAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        return new LDSETLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (A_rt == 0x1f)
+                            return new STSET(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSET(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (A_rt == 0x1f)
+                            return new STSETL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSETL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        return new LDSETA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        return new LDSETLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (A_rt == 0x1f)
+                            return new STSET64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSET64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (A_rt == 0x1f)
+                            return new STSETL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSETL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        return new LDSETA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        return new LDSETLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            case 0x4:
+                switch(size_ar){
+                    case 0x0:
+                        if (A_rt == 0x1f)
+                            return new STSMAXB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAXB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (A_rt == 0x1f)
+                            return new STSMAXLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAXLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        return new LDSMAXAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        return new LDSMAXLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (A_rt == 0x1f)
+                            return new STSMAXH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAXH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (A_rt == 0x1f)
+                            return new STSMAXLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAXLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        return new LDSMAXAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        return new LDSMAXLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (A_rt == 0x1f)
+                            return new STSMAX(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAX(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (A_rt == 0x1f)
+                            return new STSMAXL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAXL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        return new LDSMAXA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        return new LDSMAXLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (A_rt == 0x1f)
+                            return new STSMAX64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAX64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (A_rt == 0x1f)
+                            return new STSMAXL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMAXL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        return new LDSMAXA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        return new LDSMAXLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            case 0x5:
+                switch(size_ar){
+                    case 0x0:
+                        if (A_rt == 0x1f)
+                            return new STSMINB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMINB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (A_rt == 0x1f)
+                            return new STSMINLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMINLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        return new LDSMINAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        return new LDSMINLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (A_rt == 0x1f)
+                            return new STSMINH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMINH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (A_rt == 0x1f)
+                            return new STSMINLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMINLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        return new LDSMINAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        return new LDSMINLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (A_rt == 0x1f)
+                            return new STSMIN(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMIN(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (A_rt == 0x1f)
+                            return new STSMINL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMINL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        return new LDSMINA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        return new LDSMINLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (A_rt == 0x1f)
+                            return new STSMIN64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMIN64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (A_rt == 0x1f)
+                            return new STSMINL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDSMINL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        return new LDSMINA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        return new LDSMINLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            case 0x6:
+                switch(size_ar){
+                    case 0x0:
+                        if (A_rt == 0x1f)
+                            return new STUMAXB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAXB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (A_rt == 0x1f)
+                            return new STUMAXLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAXLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        return new LDUMAXAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        return new LDUMAXLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (A_rt == 0x1f)
+                            return new STUMAXH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAXH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (A_rt == 0x1f)
+                            return new STUMAXLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAXLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        return new LDUMAXAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        return new LDUMAXLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (A_rt == 0x1f)
+                            return new STUMAX(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAX(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (A_rt == 0x1f)
+                            return new STUMAXL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAXL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        return new LDUMAXA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        return new LDUMAXLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (A_rt == 0x1f)
+                            return new STUMAX64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAX64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (A_rt == 0x1f)
+                            return new STUMAXL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMAXL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        return new LDUMAXA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        return new LDUMAXLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            case 0x7:
+                switch(size_ar){
+                    case 0x0:
+                        if (A_rt == 0x1f)
+                            return new STUMINB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMINB(machInst, rt, rnsp, rs);
+                    case 0x1 :
+                        if (A_rt == 0x1f)
+                            return new STUMINLB(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMINLB(machInst, rt, rnsp, rs);
+                    case 0x2:
+                        return new LDUMINAB(machInst, rt, rnsp, rs);
+                    case 0x3:
+                        return new LDUMINLAB(machInst, rt, rnsp, rs);
+                    case 0x4:
+                        if (A_rt == 0x1f)
+                            return new STUMINH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMINH(machInst, rt, rnsp, rs);
+                    case 0x5 :
+                        if (A_rt == 0x1f)
+                            return new STUMINLH(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMINLH(machInst, rt, rnsp, rs);
+                    case 0x6:
+                        return new LDUMINAH(machInst, rt, rnsp, rs);
+                    case 0x7:
+                        return new LDUMINLAH(machInst, rt, rnsp, rs);
+                    case 0x8:
+                        if (A_rt == 0x1f)
+                            return new STUMIN(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMIN(machInst, rt, rnsp, rs);
+                    case 0x9 :
+                        if (A_rt == 0x1f)
+                            return new STUMINL(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMINL(machInst, rt, rnsp, rs);
+                    case 0xa:
+                        return new LDUMINA(machInst, rt, rnsp, rs);
+                    case 0xb:
+                        return new LDUMINLA(machInst, rt, rnsp, rs);
+                    case 0xc:
+                        if (A_rt == 0x1f)
+                            return new STUMIN64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMIN64(machInst, rt, rnsp, rs);
+                    case 0xd :
+                        if (A_rt == 0x1f)
+                            return new STUMINL64(machInst, rt, rnsp, rs);
+                        else
+                            return new LDUMINL64(machInst, rt, rnsp, rs);
+                    case 0xe:
+                        return new LDUMINA64(machInst, rt, rnsp, rs);
+                    case 0xf:
+                        return new LDUMINLA64(machInst, rt, rnsp, rs);
+                    default:
+                        GEM5_UNREACHABLE;
+                }
+            default:
+                return new Unknown64(machInst);
+        }
+    }
+}
+}};
+
+
+output decoder {{
+namespace Aarch64
+{
+
+    StaticInstPtr
     decodeLoadsStores(ExtMachInst machInst)
     {
         // bit 27,25=10
@@ -435,11 +1220,11 @@ namespace Aarch64
             if (bits(machInst, 26) == 0) {
                 if (bits(machInst, 24) != 0)
                     return new Unknown64(machInst);
-                IntRegIndex rt = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-                IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-                IntRegIndex rnsp = makeSP(rn);
-                IntRegIndex rt2 = (IntRegIndex)(uint8_t)bits(machInst, 14, 10);
-                IntRegIndex rs = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
+                RegIndex rt = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+                RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+                RegIndex rnsp = makeSP(rn);
+                RegIndex rt2 = (RegIndex)(uint8_t)bits(machInst, 14, 10);
+                RegIndex rs = (RegIndex)(uint8_t)bits(machInst, 20, 16);
                 uint8_t opc = (bits(machInst, 15) << 0) |
                               (bits(machInst, 23, 21) << 1);
                 uint8_t size = bits(machInst, 31, 30);
@@ -454,6 +1239,8 @@ namespace Aarch64
                         return new STXRW64(machInst, rt, rnsp, rs);
                       case 0x3:
                         return new STXRX64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
                   case 0x1:
                     switch (size) {
@@ -465,27 +1252,35 @@ namespace Aarch64
                         return new STLXRW64(machInst, rt, rnsp, rs);
                       case 0x3:
                         return new STLXRX64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
                   case 0x2:
                     switch (size) {
                       case 0x0:
+                        return new CASP32(machInst, rt, rnsp, rs);
                       case 0x1:
-                        return new Unknown64(machInst);
+                        return new CASP64(machInst, rt, rnsp, rs);
                       case 0x2:
                         return new STXPW64(machInst, rs, rt, rt2, rnsp);
                       case 0x3:
                         return new STXPX64(machInst, rs, rt, rt2, rnsp);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
 
                   case 0x3:
                     switch (size) {
                       case 0x0:
+                        return new CASPL32(machInst, rt, rnsp, rs);
                       case 0x1:
-                        return new Unknown64(machInst);
+                        return new CASPL64(machInst, rt, rnsp, rs);
                       case 0x2:
                         return new STLXPW64(machInst, rs, rt, rt2, rnsp);
                       case 0x3:
                         return new STLXPX64(machInst, rs, rt, rt2, rnsp);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
 
                   case 0x4:
@@ -498,6 +1293,8 @@ namespace Aarch64
                         return new LDXRW64(machInst, rt, rnsp, rs);
                       case 0x3:
                         return new LDXRX64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
                   case 0x5:
                     switch (size) {
@@ -509,29 +1306,35 @@ namespace Aarch64
                         return new LDAXRW64(machInst, rt, rnsp, rs);
                       case 0x3:
                         return new LDAXRX64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
                   case 0x6:
                     switch (size) {
                       case 0x0:
+                        return new CASPA32(machInst, rt, rnsp, rs);
                       case 0x1:
-                        return new Unknown64(machInst);
+                        return new CASPA64(machInst, rt, rnsp, rs);
                       case 0x2:
                         return new LDXPW64(machInst, rt, rt2, rnsp);
                       case 0x3:
                         return new LDXPX64(machInst, rt, rt2, rnsp);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
-
                   case 0x7:
                     switch (size) {
                       case 0x0:
+                        return new CASPAL32(machInst, rt, rnsp, rs);
                       case 0x1:
-                        return new Unknown64(machInst);
+                        return new CASPAL64(machInst, rt, rnsp, rs);
                       case 0x2:
                         return new LDAXPW64(machInst, rt, rt2, rnsp);
                       case 0x3:
                         return new LDAXPX64(machInst, rt, rt2, rnsp);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
-
                   case 0x9:
                     switch (size) {
                       case 0x0:
@@ -542,6 +1345,34 @@ namespace Aarch64
                         return new STLRW64(machInst, rt, rnsp);
                       case 0x3:
                         return new STLRX64(machInst, rt, rnsp);
+                      default:
+                        GEM5_UNREACHABLE;
+                    }
+                  case 0xa:
+                    switch (size) {
+                      case 0x0:
+                        return new CASB(machInst, rt, rnsp, rs);
+                      case 0x1:
+                        return new CASH(machInst, rt, rnsp, rs);
+                      case 0x2:
+                        return new CAS32(machInst, rt, rnsp, rs);
+                      case 0x3:
+                        return new CAS64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
+                    }
+                  case 0xb:
+                    switch (size) {
+                      case 0x0:
+                        return new CASLB(machInst, rt, rnsp, rs);
+                      case 0x1:
+                        return new CASLH(machInst, rt, rnsp, rs);
+                      case 0x2:
+                        return new CASL32(machInst, rt, rnsp, rs);
+                      case 0x3:
+                        return new CASL64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
                   case 0xd:
                     switch (size) {
@@ -553,6 +1384,34 @@ namespace Aarch64
                         return new LDARW64(machInst, rt, rnsp);
                       case 0x3:
                         return new LDARX64(machInst, rt, rnsp);
+                      default:
+                        GEM5_UNREACHABLE;
+                    }
+                  case 0xe:
+                    switch (size) {
+                      case 0x0:
+                        return new CASAB(machInst, rt, rnsp, rs);
+                      case 0x1:
+                        return new CASAH(machInst, rt, rnsp, rs);
+                      case 0x2:
+                        return new CASA32(machInst, rt, rnsp, rs);
+                      case 0x3:
+                        return new CASA64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
+                    }
+                  case 0xf:
+                    switch (size) {
+                      case 0x0:
+                        return new CASALB(machInst, rt, rnsp, rs);
+                      case 0x1:
+                        return new CASALH(machInst, rt, rnsp, rs);
+                      case 0x2:
+                        return new CASAL32(machInst, rt, rnsp, rs);
+                      case 0x3:
+                        return new CASAL64(machInst, rt, rnsp, rs);
+                      default:
+                        GEM5_UNREACHABLE;
                     }
                   default:
                     return new Unknown64(machInst);
@@ -569,7 +1428,7 @@ namespace Aarch64
             uint8_t switchVal = (bits(machInst, 26) << 0) |
                                 (bits(machInst, 31, 30) << 1);
             int64_t imm = sext<19>(bits(machInst, 23, 5)) << 2;
-            IntRegIndex rt = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
+            RegIndex rt = (RegIndex)(uint32_t)bits(machInst, 4, 0);
             switch (switchVal) {
               case 0x0:
                 return new LDRWL64_LIT(machInst, rt, imm);
@@ -607,9 +1466,9 @@ namespace Aarch64
             uint8_t type = bits(machInst, 24, 23);
             int64_t imm = sext<7>(bits(machInst, 21, 15)) * size;
 
-            IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-            IntRegIndex rt = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-            IntRegIndex rt2 = (IntRegIndex)(uint8_t)bits(machInst, 14, 10);
+            RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+            RegIndex rt = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+            RegIndex rt2 = (RegIndex)(uint8_t)bits(machInst, 14, 10);
 
             bool noAlloc = (type == 0);
             bool signExt = !noAlloc && !fp && opc == 1;
@@ -654,9 +1513,9 @@ namespace Aarch64
                                 (bits(machInst, 31, 30) << 3);
             if (bits(machInst, 24) == 1) {
                 uint64_t imm12 = bits(machInst, 21, 10);
-                IntRegIndex rt = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-                IntRegIndex rn = (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-                IntRegIndex rnsp = makeSP(rn);
+                RegIndex rt = (RegIndex)(uint32_t)bits(machInst, 4, 0);
+                RegIndex rn = (RegIndex)(uint32_t)bits(machInst, 9, 5);
+                RegIndex rnsp = makeSP(rn);
                 switch (switchVal) {
                   case 0x00:
                     return new STRB64_IMM(machInst, rt, rnsp, imm12);
@@ -712,68 +1571,155 @@ namespace Aarch64
                     return new Unknown64(machInst);
                 }
             } else if (bits(machInst, 21) == 1) {
-                if (bits(machInst, 11, 10) != 0x2)
-                    return new Unknown64(machInst);
-                if (!bits(machInst, 14))
-                    return new Unknown64(machInst);
-                IntRegIndex rt = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-                IntRegIndex rn = (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-                IntRegIndex rnsp = makeSP(rn);
-                IntRegIndex rm = (IntRegIndex)(uint32_t)bits(machInst, 20, 16);
-                ArmExtendType type =
-                    (ArmExtendType)(uint32_t)bits(machInst, 15, 13);
-                uint8_t s = bits(machInst, 12);
-                switch (switchVal) {
-                  case 0x00:
-                    return new STRB64_REG(machInst, rt, rnsp, rm, type, 0);
-                  case 0x01:
-                    return new LDRB64_REG(machInst, rt, rnsp, rm, type, 0);
-                  case 0x02:
-                    return new LDRSBX64_REG(machInst, rt, rnsp, rm, type, 0);
-                  case 0x03:
-                    return new LDRSBW64_REG(machInst, rt, rnsp, rm, type, 0);
-                  case 0x04:
-                    return new STRBFP64_REG(machInst, rt, rnsp, rm, type, 0);
-                  case 0x05:
-                    return new LDRBFP64_REG(machInst, rt, rnsp, rm, type, 0);
-                  case 0x6:
-                    return new BigFpMemReg("str", machInst, false,
-                                           rt, rnsp, rm, type, s * 4);
-                  case 0x7:
-                    return new BigFpMemReg("ldr", machInst, true,
-                                           rt, rnsp, rm, type, s * 4);
-                  case 0x08:
-                    return new STRH64_REG(machInst, rt, rnsp, rm, type, s);
-                  case 0x09:
-                    return new LDRH64_REG(machInst, rt, rnsp, rm, type, s);
-                  case 0x0a:
-                    return new LDRSHX64_REG(machInst, rt, rnsp, rm, type, s);
-                  case 0x0b:
-                    return new LDRSHW64_REG(machInst, rt, rnsp, rm, type, s);
-                  case 0x0c:
-                    return new STRHFP64_REG(machInst, rt, rnsp, rm, type, s);
-                  case 0x0d:
-                    return new LDRHFP64_REG(machInst, rt, rnsp, rm, type, s);
-                  case 0x10:
-                    return new STRW64_REG(machInst, rt, rnsp, rm, type, s * 2);
-                  case 0x11:
-                    return new LDRW64_REG(machInst, rt, rnsp, rm, type, s * 2);
-                  case 0x12:
-                    return new LDRSW64_REG(machInst, rt, rnsp, rm, type, s * 2);
-                  case 0x14:
-                    return new STRSFP64_REG(machInst, rt, rnsp, rm, type, s * 2);
-                  case 0x15:
-                    return new LDRSFP64_REG(machInst, rt, rnsp, rm, type, s * 2);
-                  case 0x18:
-                    return new STRX64_REG(machInst, rt, rnsp, rm, type, s * 3);
-                  case 0x19:
-                    return new LDRX64_REG(machInst, rt, rnsp, rm, type, s * 3);
-                  case 0x1a:
-                    return new PRFM64_REG(machInst, rt, rnsp, rm, type, s * 3);
-                  case 0x1c:
-                    return new STRDFP64_REG(machInst, rt, rnsp, rm, type, s * 3);
-                  case 0x1d:
-                    return new LDRDFP64_REG(machInst, rt, rnsp, rm, type, s * 3);
+                uint8_t group = bits(machInst, 11, 10);
+                switch (group) {
+                  case 0x0:
+                    {
+                        if ((switchVal & 0x7) == 0x2 &&
+                                bits(machInst, 20, 12) == 0x1fc) {
+                            RegIndex rt = (RegIndex)(uint32_t)
+                                bits(machInst, 4, 0);
+                            RegIndex rn = (RegIndex)(uint32_t)
+                                bits(machInst, 9, 5);
+                            RegIndex rnsp = makeSP(rn);
+                            uint8_t size = bits(machInst, 31, 30);
+                            switch (size) {
+                              case 0x0:
+                                return new LDAPRB64(machInst, rt, rnsp);
+                              case 0x1:
+                                return new LDAPRH64(machInst, rt, rnsp);
+                              case 0x2:
+                                return new LDAPRW64(machInst, rt, rnsp);
+                              case 0x3:
+                                return new LDAPRX64(machInst, rt, rnsp);
+                              default:
+                                GEM5_UNREACHABLE;
+                            }
+                        } else {
+                            return decodeAtomicArithOp(machInst);
+                        }
+                    }
+                  case 0x1:
+                  case 0x3:
+                    {
+                        RegIndex rt = (RegIndex)(uint32_t)
+                                           bits(machInst, 4, 0);
+                        RegIndex rn = (RegIndex)(uint32_t)
+                                           bits(machInst, 9, 5);
+                        uint8_t  s = bits(machInst, 22);
+                        uint64_t imm9 = bits(machInst, 20, 12);
+                        uint64_t imm10 = sext<10>(s<<9 | imm9)<<3;
+                        uint8_t val = bits(machInst, 23)<<1
+                                      | bits(machInst, 11);
+                        switch (val) {
+                          case 0x0:
+                            return new LDRAA_REG(machInst, rt,
+                                                 makeSP(rn), imm10);
+                          case 0x1:
+                            return new LDRAA_PRE(machInst, rt,
+                                                 makeSP(rn), imm10);
+                          case 0x2:
+                            return new LDRAB_REG(machInst, rt,
+                                                 makeSP(rn), imm10);
+                          case 0x3:
+                            return new LDRAB_PRE(machInst, rt,
+                                                 makeSP(rn), imm10);
+                          default:
+                            GEM5_UNREACHABLE;
+                        }
+                    }
+                  case 0x2:
+                    {
+                        if (!bits(machInst, 14))
+                            return new Unknown64(machInst);
+                        RegIndex rt = (RegIndex)(uint32_t)
+                            bits(machInst, 4, 0);
+                        RegIndex rn = (RegIndex)(uint32_t)
+                            bits(machInst, 9, 5);
+                        RegIndex rnsp = makeSP(rn);
+                        RegIndex rm = (RegIndex)(uint32_t)
+                            bits(machInst, 20, 16);
+                        ArmExtendType type =
+                            (ArmExtendType)(uint32_t)bits(machInst, 15, 13);
+                        uint8_t s = bits(machInst, 12);
+                        switch (switchVal) {
+                          case 0x00:
+                            return new STRB64_REG(machInst, rt, rnsp, rm,
+                                                  type, 0);
+                          case 0x01:
+                            return new LDRB64_REG(machInst, rt, rnsp, rm,
+                                                  type, 0);
+                          case 0x02:
+                            return new LDRSBX64_REG(machInst, rt, rnsp, rm,
+                                                    type, 0);
+                          case 0x03:
+                            return new LDRSBW64_REG(machInst, rt, rnsp, rm,
+                                                    type, 0);
+                          case 0x04:
+                            return new STRBFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, 0);
+                          case 0x05:
+                            return new LDRBFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, 0);
+                          case 0x6:
+                            return new BigFpMemReg("str", machInst, false,
+                                                   rt, rnsp, rm, type, s * 4);
+                          case 0x7:
+                            return new BigFpMemReg("ldr", machInst, true,
+                                                   rt, rnsp, rm, type, s * 4);
+                          case 0x08:
+                            return new STRH64_REG(machInst, rt, rnsp, rm,
+                                                  type, s);
+                          case 0x09:
+                            return new LDRH64_REG(machInst, rt, rnsp, rm,
+                                                  type, s);
+                          case 0x0a:
+                            return new LDRSHX64_REG(machInst, rt, rnsp, rm,
+                                                    type, s);
+                          case 0x0b:
+                            return new LDRSHW64_REG(machInst, rt, rnsp, rm,
+                                                    type, s);
+                          case 0x0c:
+                            return new STRHFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, s);
+                          case 0x0d:
+                            return new LDRHFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, s);
+                          case 0x10:
+                            return new STRW64_REG(machInst, rt, rnsp, rm,
+                                                  type, s * 2);
+                          case 0x11:
+                            return new LDRW64_REG(machInst, rt, rnsp, rm,
+                                                  type, s * 2);
+                          case 0x12:
+                            return new LDRSW64_REG(machInst, rt, rnsp, rm,
+                                                   type, s * 2);
+                          case 0x14:
+                            return new STRSFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, s * 2);
+                          case 0x15:
+                            return new LDRSFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, s * 2);
+                          case 0x18:
+                            return new STRX64_REG(machInst, rt, rnsp, rm,
+                                                  type, s * 3);
+                          case 0x19:
+                            return new LDRX64_REG(machInst, rt, rnsp, rm,
+                                                  type, s * 3);
+                          case 0x1a:
+                            return new PRFM64_REG(machInst, rt, rnsp, rm,
+                                                  type, s * 3);
+                          case 0x1c:
+                            return new STRDFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, s * 3);
+                          case 0x1d:
+                            return new LDRDFP64_REG(machInst, rt, rnsp, rm,
+                                                    type, s * 3);
+                          default:
+                            return new Unknown64(machInst);
+
+                        }
+                    }
                   default:
                     return new Unknown64(machInst);
                 }
@@ -782,11 +1728,11 @@ namespace Aarch64
                 switch (bits(machInst, 11, 10)) {
                   case 0x0:
                   {
-                    IntRegIndex rt =
-                        (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-                    IntRegIndex rn =
-                        (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-                    IntRegIndex rnsp = makeSP(rn);
+                    RegIndex rt =
+                        (RegIndex)(uint32_t)bits(machInst, 4, 0);
+                    RegIndex rn =
+                        (RegIndex)(uint32_t)bits(machInst, 9, 5);
+                    RegIndex rnsp = makeSP(rn);
                     uint64_t imm = sext<9>(bits(machInst, 20, 12));
                     switch (switchVal) {
                       case 0x00:
@@ -846,11 +1792,11 @@ namespace Aarch64
                   // bit 29:27=111, 25:24=00, 21=0, 11:10=01
                   case 0x1:
                   {
-                    IntRegIndex rt =
-                        (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-                    IntRegIndex rn =
-                        (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-                    IntRegIndex rnsp = makeSP(rn);
+                    RegIndex rt =
+                        (RegIndex)(uint32_t)bits(machInst, 4, 0);
+                    RegIndex rn =
+                        (RegIndex)(uint32_t)bits(machInst, 9, 5);
+                    RegIndex rnsp = makeSP(rn);
                     uint64_t imm = sext<9>(bits(machInst, 20, 12));
                     switch (switchVal) {
                       case 0x00:
@@ -907,11 +1853,11 @@ namespace Aarch64
                   }
                   case 0x2:
                   {
-                    IntRegIndex rt =
-                        (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-                    IntRegIndex rn =
-                        (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-                    IntRegIndex rnsp = makeSP(rn);
+                    RegIndex rt =
+                        (RegIndex)(uint32_t)bits(machInst, 4, 0);
+                    RegIndex rn =
+                        (RegIndex)(uint32_t)bits(machInst, 9, 5);
+                    RegIndex rnsp = makeSP(rn);
                     uint64_t imm = sext<9>(bits(machInst, 20, 12));
                     switch (switchVal) {
                       case 0x00:
@@ -946,11 +1892,11 @@ namespace Aarch64
                   }
                   case 0x3:
                   {
-                    IntRegIndex rt =
-                        (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-                    IntRegIndex rn =
-                        (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-                    IntRegIndex rnsp = makeSP(rn);
+                    RegIndex rt =
+                        (RegIndex)(uint32_t)bits(machInst, 4, 0);
+                    RegIndex rn =
+                        (RegIndex)(uint32_t)bits(machInst, 9, 5);
+                    RegIndex rnsp = makeSP(rn);
                     uint64_t imm = sext<9>(bits(machInst, 20, 12));
                     switch (switchVal) {
                       case 0x00:
@@ -1005,9 +1951,13 @@ namespace Aarch64
                         return new Unknown64(machInst);
                     }
                   }
+                  default:
+                    GEM5_UNREACHABLE;
                 }
             }
           }
+          default:
+            GEM5_UNREACHABLE;
         }
         return new FailUnimplemented("Unhandled Case1", machInst);
     }
@@ -1017,6 +1967,379 @@ namespace Aarch64
 output decoder {{
 namespace Aarch64
 {
+
+    StaticInstPtr
+    decodeLogical(ExtMachInst machInst)
+    {
+        uint8_t imm6 = bits(machInst, 15, 10);
+        bool sf = bits(machInst, 31);
+        if (!sf && (imm6 & 0x20))
+            return new Unknown64(machInst);
+
+        RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+        RegIndex rdzr = makeZero(rd);
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+        ArmShiftType type = (ArmShiftType)(uint8_t)bits(machInst, 23, 22);
+
+        uint8_t switch_val = (bits(machInst, 21) << 0) |
+                            (bits(machInst, 30, 29) << 1);
+
+        switch (switch_val) {
+          case 0x0:
+            return new AndXSReg(machInst, rdzr, rn, rm, imm6, type);
+          case 0x1:
+            return new BicXSReg(machInst, rdzr, rn, rm, imm6, type);
+          case 0x2:
+            return new OrrXSReg(machInst, rdzr, rn, rm, imm6, type);
+          case 0x3:
+            return new OrnXSReg(machInst, rdzr, rn, rm, imm6, type);
+          case 0x4:
+            return new EorXSReg(machInst, rdzr, rn, rm, imm6, type);
+          case 0x5:
+            return new EonXSReg(machInst, rdzr, rn, rm, imm6, type);
+          case 0x6:
+            return new AndXSRegCc(machInst, rdzr, rn, rm, imm6, type);
+          case 0x7:
+            return new BicXSRegCc(machInst, rdzr, rn, rm, imm6, type);
+          default:
+            GEM5_UNREACHABLE;
+        }
+    }
+
+    StaticInstPtr
+    decodeAddSub(ExtMachInst machInst)
+    {
+        uint8_t switch_val = bits(machInst, 30, 29);
+        if (bits(machInst, 21) == 0) {
+            ArmShiftType type =
+                (ArmShiftType)(uint8_t)bits(machInst, 23, 22);
+            if (type == ROR)
+                return new Unknown64(machInst);
+            uint8_t imm6 = bits(machInst, 15, 10);
+            if (!bits(machInst, 31) && bits(imm6, 5))
+                return new Unknown64(machInst);
+            RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+            RegIndex rdzr = makeZero(rd);
+            RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+            RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+            switch (switch_val) {
+              case 0x0:
+                return new AddXSReg(machInst, rdzr, rn, rm, imm6, type);
+              case 0x1:
+                return new AddXSRegCc(machInst, rdzr, rn, rm, imm6, type);
+              case 0x2:
+                return new SubXSReg(machInst, rdzr, rn, rm, imm6, type);
+              case 0x3:
+                return new SubXSRegCc(machInst, rdzr, rn, rm, imm6, type);
+              default:
+                GEM5_UNREACHABLE;
+            }
+        } else {
+            if (bits(machInst, 23, 22) != 0 || bits(machInst, 12, 10) > 0x4)
+               return new Unknown64(machInst);
+            ArmExtendType type =
+                (ArmExtendType)(uint8_t)bits(machInst, 15, 13);
+            uint8_t imm3 = bits(machInst, 12, 10);
+            RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+            RegIndex rdsp = makeSP(rd);
+            RegIndex rdzr = makeZero(rd);
+            RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+            RegIndex rnsp = makeSP(rn);
+            RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+
+            switch (switch_val) {
+              case 0x0:
+                return new AddXEReg(machInst, rdsp, rnsp, rm, type, imm3);
+              case 0x1:
+                return new AddXERegCc(machInst, rdzr, rnsp, rm, type, imm3);
+              case 0x2:
+                return new SubXEReg(machInst, rdsp, rnsp, rm, type, imm3);
+              case 0x3:
+                return new SubXERegCc(machInst, rdzr, rnsp, rm, type, imm3);
+              default:
+                GEM5_UNREACHABLE;
+            }
+        }
+    }
+
+    StaticInstPtr
+    decodeAddSubWithCarry(ExtMachInst machInst)
+    {
+        if (bits(machInst, 15, 10))
+            return new Unknown64(machInst);
+
+        RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+        RegIndex rdzr = makeZero(rd);
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+
+        uint8_t switch_val = bits(machInst, 30, 29);
+        switch (switch_val) {
+          case 0x0:
+            return new AdcXSReg(machInst, rdzr, rn, rm, 0, LSL);
+          case 0x1:
+            return new AdcXSRegCc(machInst, rdzr, rn, rm, 0, LSL);
+          case 0x2:
+            return new SbcXSReg(machInst, rdzr, rn, rm, 0, LSL);
+          case 0x3:
+            return new SbcXSRegCc(machInst, rdzr, rn, rm, 0, LSL);
+          default:
+            GEM5_UNREACHABLE;
+        }
+    }
+
+    StaticInstPtr
+    decodeRotIntoFlags(ExtMachInst machInst)
+    {
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        uint8_t imm6 = bits(machInst, 20, 15);
+        uint8_t mask = bits(machInst, 3, 0);
+        return new Rmif(machInst, rn, imm6, mask);
+    }
+
+    StaticInstPtr
+    decodeEvalIntoFlags(ExtMachInst machInst)
+    {
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        int sz = bits(machInst, 14);
+        if (sz)
+            return new Setf16(machInst, rn);
+        else
+            return new Setf8(machInst, rn);
+    }
+
+    StaticInstPtr
+    decodeCondCompare(ExtMachInst machInst)
+    {
+        if ((bits(machInst, 4) == 1) ||
+            (bits(machInst, 10) == 1) ||
+            (bits(machInst, 29) == 0)) {
+            return new Unknown64(machInst);
+        }
+
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+
+        ConditionCode cond =
+            (ConditionCode)(uint8_t)bits(machInst, 15, 12);
+        uint8_t flags = bits(machInst, 3, 0);
+        if (bits(machInst, 11) == 0) {
+            if (bits(machInst, 30) == 0) {
+                return new CcmnReg64(machInst, rn, rm, cond, flags);
+            } else {
+                return new CcmpReg64(machInst, rn, rm, cond, flags);
+            }
+        } else {
+            uint8_t imm5 = bits(machInst, 20, 16);
+            if (bits(machInst, 30) == 0) {
+                return new CcmnImm64(machInst, rn, imm5, cond, flags);
+            } else {
+                return new CcmpImm64(machInst, rn, imm5, cond, flags);
+            }
+        }
+    }
+
+    StaticInstPtr
+    decodeCondSelect(ExtMachInst machInst)
+    {
+        if (bits(machInst, 29) == 1 ||
+                bits(machInst, 11) == 1) {
+            return new Unknown64(machInst);
+        }
+
+        RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+        RegIndex rdzr = makeZero(rd);
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+
+        ConditionCode cond =
+            (ConditionCode)(uint8_t)bits(machInst, 15, 12);
+
+        uint8_t switch_val = (bits(machInst, 10) << 0) |
+                             (bits(machInst, 30) << 1);
+        switch (switch_val) {
+          case 0x0:
+            return new Csel64(machInst, rdzr, rn, rm, cond);
+          case 0x1:
+            return new Csinc64(machInst, rdzr, rn, rm, cond);
+          case 0x2:
+            return new Csinv64(machInst, rdzr, rn, rm, cond);
+          case 0x3:
+            return new Csneg64(machInst, rdzr, rn, rm, cond);
+          default:
+            GEM5_UNREACHABLE;
+        }
+    }
+
+    StaticInstPtr
+    decodeDataProcTwoS(ExtMachInst machInst)
+    {
+        if (bits(machInst, 29) != 0)
+            return new Unknown64(machInst);
+
+        RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+        RegIndex rdzr = makeZero(rd);
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+        RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
+
+        uint8_t switch_val = bits(machInst, 15, 10);
+        switch (switch_val) {
+          case 0x2:
+            return new Udiv64(machInst, rdzr, rn, rm);
+          case 0x3:
+            return new Sdiv64(machInst, rdzr, rn, rm);
+          case 0x8:
+            return new Lslv64(machInst, rdzr, rn, rm);
+          case 0x9:
+            return new Lsrv64(machInst, rdzr, rn, rm);
+          case 0xa:
+            return new Asrv64(machInst, rdzr, rn, rm);
+          case 0xb:
+            return new Rorv64(machInst, rdzr, rn, rm);
+         case 0xc:
+            return new Pacga(machInst, rd, rn, makeSP(rm));
+          case 0x10:
+            return new Crc32b64(machInst, rdzr, rn, rm);
+          case 0x11:
+            return new Crc32h64(machInst, rdzr, rn, rm);
+          case 0x12:
+            return new Crc32w64(machInst, rdzr, rn, rm);
+          case 0x13:
+            return new Crc32x64(machInst, rdzr, rn, rm);
+          case 0x14:
+            return new Crc32cb64(machInst, rdzr, rn, rm);
+          case 0x15:
+            return new Crc32ch64(machInst, rdzr, rn, rm);
+          case 0x16:
+            return new Crc32cw64(machInst, rdzr, rn, rm);
+          case 0x17:
+            return new Crc32cx64(machInst, rdzr, rn, rm);
+          default:
+            return new Unknown64(machInst);
+        }
+    }
+
+    StaticInstPtr
+    decodeDataProcOneS(ExtMachInst machInst)
+    {
+        RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+        RegIndex rdzr = makeZero(rd);
+        RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+
+        uint8_t dm = bits(machInst, 20, 14);
+        switch(dm){
+            case 0x4:
+            {
+              uint8_t zflags = bits(machInst, 13, 10);
+              switch (zflags) {
+                case 0x0:
+                    return new Pacia(machInst, rd, makeSP(rn));
+                case 0x1:
+                    return new Pacib(machInst, rd, makeSP(rn));
+                case 0x2:
+                    return new Pacda(machInst, rd, makeSP(rn));
+                case 0x3:
+                    return new Pacdb(machInst, rd, makeSP(rn));
+                case 0x4:
+                    return new Autia(machInst, rd, makeSP(rn));
+                case 0x5:
+                    return new Autib(machInst, rd, makeSP(rn));
+                case 0x6:
+                    return new Autda(machInst, rd, makeSP(rn));
+                case 0x7:
+                    return new Autdb(machInst, rd, makeSP(rn));
+                case 0x8:
+                    if (rn == 0x1f)
+                        return new Paciza(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                case 0x9:
+                    if (rn == 0x1f)
+                        return new Pacizb(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                case 0xa:
+                    if (rn == 0x1f)
+                        return new Pacdza(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                case 0xb:
+                    if (rn == 0x1f)
+                        return new Pacdzb(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                case 0xc:
+                    if (rn == 0x1f)
+                        return new Autiza(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                case 0xd:
+                    if (rn == 0x1f)
+                        return new Autizb(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                case 0xe:
+                    if (rn == 0x1f)
+                        return new Autdza(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                case 0xf:
+                    if (rn == 0x1f)
+                        return new Autdzb(machInst, rd,
+                                          int_reg::Zero);
+                    else
+                        return new Unknown64(machInst);
+                default:
+                    return new Unknown64(machInst);
+              }
+            }
+            case 0x5:
+              {
+                if (rn != 0x1f)
+                    return new Unknown64(machInst);
+                bool d = bits(machInst,10);
+                if (d)
+                    return new Xpacd(machInst, rd);
+                else
+                    return new Xpaci(machInst, rd);
+              }
+        }
+        if (dm != 0 || bits(machInst, 29) != 0) {
+            // dm !=0 and dm != 0x1
+            return new Unknown64(machInst);
+        }
+        uint8_t switchVal = bits(machInst, 15, 10);
+        switch (switchVal) {
+          case 0x0:
+            return new Rbit64(machInst, rdzr, rn);
+          case 0x1:
+            return new Rev1664(machInst, rdzr, rn);
+          case 0x2:
+            if (bits(machInst, 31) == 0)
+                return new Rev64(machInst, rdzr, rn);
+            else
+                return new Rev3264(machInst, rdzr, rn);
+          case 0x3:
+            if (bits(machInst, 31) != 1)
+                return new Unknown64(machInst);
+            return new Rev64(machInst, rdzr, rn);
+          case 0x4:
+            return new Clz64(machInst, rdzr, rn);
+          case 0x5:
+            return new Cls64(machInst, rdzr, rn);
+          default:
+            return new Unknown64(machInst);
+        }
+    }
+
     StaticInstPtr
     decodeDataProcReg(ExtMachInst machInst)
     {
@@ -1024,213 +2347,38 @@ namespace Aarch64
                             (bits(machInst, 24) << 0);
         switch (switchVal) {
           case 0x0:
-          {
-            uint8_t switchVal = (bits(machInst, 21) << 0) |
-                                (bits(machInst, 30, 29) << 1);
-            ArmShiftType type = (ArmShiftType)(uint8_t)bits(machInst, 23, 22);
-            uint8_t imm6 = bits(machInst, 15, 10);
-            bool sf = bits(machInst, 31);
-            if (!sf && (imm6 & 0x20))
-                return new Unknown64(machInst);
-            IntRegIndex rd = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-            IntRegIndex rdzr = makeZero(rd);
-            IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-            IntRegIndex rm = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
-
-            switch (switchVal) {
-              case 0x0:
-                return new AndXSReg(machInst, rdzr, rn, rm, imm6, type);
-              case 0x1:
-                return new BicXSReg(machInst, rdzr, rn, rm, imm6, type);
-              case 0x2:
-                return new OrrXSReg(machInst, rdzr, rn, rm, imm6, type);
-              case 0x3:
-                return new OrnXSReg(machInst, rdzr, rn, rm, imm6, type);
-              case 0x4:
-                return new EorXSReg(machInst, rdzr, rn, rm, imm6, type);
-              case 0x5:
-                return new EonXSReg(machInst, rdzr, rn, rm, imm6, type);
-              case 0x6:
-                return new AndXSRegCc(machInst, rdzr, rn, rm, imm6, type);
-              case 0x7:
-                return new BicXSRegCc(machInst, rdzr, rn, rm, imm6, type);
-            }
-          }
+            return decodeLogical(machInst);
           case 0x1:
-          {
-            uint8_t switchVal = bits(machInst, 30, 29);
-            if (bits(machInst, 21) == 0) {
-                ArmShiftType type =
-                    (ArmShiftType)(uint8_t)bits(machInst, 23, 22);
-                if (type == ROR)
-                    return new Unknown64(machInst);
-                uint8_t imm6 = bits(machInst, 15, 10);
-                if (!bits(machInst, 31) && bits(imm6, 5))
-                    return new Unknown64(machInst);
-                IntRegIndex rd = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-                IntRegIndex rdzr = makeZero(rd);
-                IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-                IntRegIndex rm = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
-                switch (switchVal) {
-                  case 0x0:
-                    return new AddXSReg(machInst, rdzr, rn, rm, imm6, type);
-                  case 0x1:
-                    return new AddXSRegCc(machInst, rdzr, rn, rm, imm6, type);
-                  case 0x2:
-                    return new SubXSReg(machInst, rdzr, rn, rm, imm6, type);
-                  case 0x3:
-                    return new SubXSRegCc(machInst, rdzr, rn, rm, imm6, type);
-                }
-            } else {
-                if (bits(machInst, 23, 22) != 0 || bits(machInst, 12, 10) > 0x4)
-                   return new Unknown64(machInst);
-                ArmExtendType type =
-                    (ArmExtendType)(uint8_t)bits(machInst, 15, 13);
-                uint8_t imm3 = bits(machInst, 12, 10);
-                IntRegIndex rd = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-                IntRegIndex rdsp = makeSP(rd);
-                IntRegIndex rdzr = makeZero(rd);
-                IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-                IntRegIndex rnsp = makeSP(rn);
-                IntRegIndex rm = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
-
-                switch (switchVal) {
-                  case 0x0:
-                    return new AddXEReg(machInst, rdsp, rnsp, rm, type, imm3);
-                  case 0x1:
-                    return new AddXERegCc(machInst, rdzr, rnsp, rm, type, imm3);
-                  case 0x2:
-                    return new SubXEReg(machInst, rdsp, rnsp, rm, type, imm3);
-                  case 0x3:
-                    return new SubXERegCc(machInst, rdzr, rnsp, rm, type, imm3);
-                }
-            }
-          }
+            return decodeAddSub(machInst);
           case 0x2:
           {
             if (bits(machInst, 21) == 1)
                 return new Unknown64(machInst);
-            IntRegIndex rd = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-            IntRegIndex rdzr = makeZero(rd);
-            IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-            IntRegIndex rm = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
+
             switch (bits(machInst, 23, 22)) {
               case 0x0:
-              {
-                if (bits(machInst, 15, 10))
+                switch (bits(machInst, 11, 10)) {
+                  case 0b00:
+                    return decodeAddSubWithCarry(machInst);
+                  case 0b01:
+                    return decodeRotIntoFlags(machInst);
+                  case 0b10:
+                    return decodeEvalIntoFlags(machInst);
+                  default: // 0b11
                     return new Unknown64(machInst);
-                uint8_t switchVal = bits(machInst, 30, 29);
-                switch (switchVal) {
-                  case 0x0:
-                    return new AdcXSReg(machInst, rdzr, rn, rm, 0, LSL);
-                  case 0x1:
-                    return new AdcXSRegCc(machInst, rdzr, rn, rm, 0, LSL);
-                  case 0x2:
-                    return new SbcXSReg(machInst, rdzr, rn, rm, 0, LSL);
-                  case 0x3:
-                    return new SbcXSRegCc(machInst, rdzr, rn, rm, 0, LSL);
                 }
-              }
               case 0x1:
-              {
-                if ((bits(machInst, 4) == 1) ||
-                        (bits(machInst, 10) == 1) ||
-                        (bits(machInst, 29) == 0)) {
-                    return new Unknown64(machInst);
-                }
-                ConditionCode cond =
-                    (ConditionCode)(uint8_t)bits(machInst, 15, 12);
-                uint8_t flags = bits(machInst, 3, 0);
-                IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-                if (bits(machInst, 11) == 0) {
-                    IntRegIndex rm =
-                        (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
-                    if (bits(machInst, 30) == 0) {
-                        return new CcmnReg64(machInst, rn, rm, cond, flags);
-                    } else {
-                        return new CcmpReg64(machInst, rn, rm, cond, flags);
-                    }
-                } else {
-                    uint8_t imm5 = bits(machInst, 20, 16);
-                    if (bits(machInst, 30) == 0) {
-                        return new CcmnImm64(machInst, rn, imm5, cond, flags);
-                    } else {
-                        return new CcmpImm64(machInst, rn, imm5, cond, flags);
-                    }
-                }
-              }
+                return decodeCondCompare(machInst);
               case 0x2:
-              {
-                if (bits(machInst, 29) == 1 ||
-                        bits(machInst, 11) == 1) {
-                    return new Unknown64(machInst);
-                }
-                uint8_t switchVal = (bits(machInst, 10) << 0) |
-                                    (bits(machInst, 30) << 1);
-                IntRegIndex rd = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-                IntRegIndex rdzr = makeZero(rd);
-                IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-                IntRegIndex rm = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
-                ConditionCode cond =
-                    (ConditionCode)(uint8_t)bits(machInst, 15, 12);
-                switch (switchVal) {
-                  case 0x0:
-                    return new Csel64(machInst, rdzr, rn, rm, cond);
-                  case 0x1:
-                    return new Csinc64(machInst, rdzr, rn, rm, cond);
-                  case 0x2:
-                    return new Csinv64(machInst, rdzr, rn, rm, cond);
-                  case 0x3:
-                    return new Csneg64(machInst, rdzr, rn, rm, cond);
-                }
-              }
+                return decodeCondSelect(machInst);
               case 0x3:
                 if (bits(machInst, 30) == 0) {
-                    if (bits(machInst, 29) != 0)
-                        return new Unknown64(machInst);
-                    uint8_t switchVal = bits(machInst, 15, 10);
-                    switch (switchVal) {
-                      case 0x2:
-                        return new Udiv64(machInst, rdzr, rn, rm);
-                      case 0x3:
-                        return new Sdiv64(machInst, rdzr, rn, rm);
-                      case 0x8:
-                        return new Lslv64(machInst, rdzr, rn, rm);
-                      case 0x9:
-                        return new Lsrv64(machInst, rdzr, rn, rm);
-                      case 0xa:
-                        return new Asrv64(machInst, rdzr, rn, rm);
-                      case 0xb:
-                        return new Rorv64(machInst, rdzr, rn, rm);
-                      default:
-                        return new Unknown64(machInst);
-                    }
+                    return decodeDataProcTwoS(machInst);
                 } else {
-                    if (bits(machInst, 20, 16) != 0 ||
-                            bits(machInst, 29) != 0) {
-                        return new Unknown64(machInst);
-                    }
-                    uint8_t switchVal = bits(machInst, 15, 10);
-                    switch (switchVal) {
-                      case 0x0:
-                        return new Rbit64(machInst, rdzr, rn);
-                      case 0x1:
-                        return new Rev1664(machInst, rdzr, rn);
-                      case 0x2:
-                        if (bits(machInst, 31) == 0)
-                            return new Rev64(machInst, rdzr, rn);
-                        else
-                            return new Rev3264(machInst, rdzr, rn);
-                      case 0x3:
-                        if (bits(machInst, 31) != 1)
-                            return new Unknown64(machInst);
-                        return new Rev64(machInst, rdzr, rn);
-                      case 0x4:
-                        return new Clz64(machInst, rdzr, rn);
-                      case 0x5:
-                        return new Cls64(machInst, rdzr, rn);
-                    }
+                    return decodeDataProcOneS(machInst);
                 }
+              default:
+                GEM5_UNREACHABLE;
             }
           }
           case 0x3:
@@ -1238,11 +2386,11 @@ namespace Aarch64
             if (bits(machInst, 30, 29) != 0x0 ||
                     (bits(machInst, 23, 21) != 0 && bits(machInst, 31) == 0))
                 return new Unknown64(machInst);
-            IntRegIndex rd = (IntRegIndex)(uint8_t)bits(machInst, 4, 0);
-            IntRegIndex rdzr = makeZero(rd);
-            IntRegIndex rn = (IntRegIndex)(uint8_t)bits(machInst, 9, 5);
-            IntRegIndex ra = (IntRegIndex)(uint8_t)bits(machInst, 14, 10);
-            IntRegIndex rm = (IntRegIndex)(uint8_t)bits(machInst, 20, 16);
+            RegIndex rd = (RegIndex)(uint8_t)bits(machInst, 4, 0);
+            RegIndex rdzr = makeZero(rd);
+            RegIndex rn = (RegIndex)(uint8_t)bits(machInst, 9, 5);
+            RegIndex ra = (RegIndex)(uint8_t)bits(machInst, 14, 10);
+            RegIndex rm = (RegIndex)(uint8_t)bits(machInst, 20, 16);
             switch (bits(machInst, 23, 21)) {
               case 0x0:
                 if (bits(machInst, 15) == 0)
@@ -1271,6 +2419,8 @@ namespace Aarch64
                 return new Unknown64(machInst);
             }
           }
+          default:
+            GEM5_UNREACHABLE;
         }
         return new FailUnimplemented("Unhandled Case2", machInst);
     }
@@ -1303,15 +2453,15 @@ namespace Aarch64
                 return decodeNeon3Diff(machInst);
             } else if (bits(machInst, 20, 17) == 0x0) {
                 return decodeNeon2RegMisc(machInst);
+            } else if (bits(machInst, 20, 17) == 0x4) {
+                return decodeCryptoAES(machInst);
             } else if (bits(machInst, 20, 17) == 0x8) {
                 return decodeNeonAcrossLanes(machInst);
             } else {
                 return new Unknown64(machInst);
             }
-        } else if (bits(machInst, 24) ||
-                   bits(machInst, 21) ||
-                   bits(machInst, 15)) {
-            return new Unknown64(machInst);
+        } else if (bits(machInst, 15) == 1) {
+            return decodeNeon3RegExtension<DecoderFeatures>(machInst);
         } else if (bits(machInst, 10) == 1) {
             if (bits(machInst, 23, 22))
                 return new Unknown64(machInst);
@@ -1341,10 +2491,10 @@ namespace Aarch64
         if (bits(machInst, 24) == 1) {
             if (bits(machInst, 31) || bits(machInst, 29))
                 return new Unknown64(machInst);
-            IntRegIndex rd    = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-            IntRegIndex rn    = (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
-            IntRegIndex rm    = (IntRegIndex)(uint32_t)bits(machInst, 20, 16);
-            IntRegIndex ra    = (IntRegIndex)(uint32_t)bits(machInst, 14, 10);
+            RegIndex rd    = (RegIndex)(uint32_t)bits(machInst, 4, 0);
+            RegIndex rn    = (RegIndex)(uint32_t)bits(machInst, 9, 5);
+            RegIndex rm    = (RegIndex)(uint32_t)bits(machInst, 20, 16);
+            RegIndex ra    = (RegIndex)(uint32_t)bits(machInst, 14, 10);
             uint8_t switchVal = (bits(machInst, 23, 21) << 1) |
                                 (bits(machInst, 15)     << 0);
             switch (switchVal) {
@@ -1374,8 +2524,8 @@ namespace Aarch64
             uint8_t switchVal = bits(machInst, 20, 16);
             uint8_t type      = bits(machInst, 23, 22);
             uint8_t scale     = bits(machInst, 15, 10);
-            IntRegIndex rd    = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-            IntRegIndex rn    = (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
+            RegIndex rd    = (RegIndex)(uint32_t)bits(machInst, 4, 0);
+            RegIndex rn    = (RegIndex)(uint32_t)bits(machInst, 9, 5);
             if (bits(machInst, 18, 17) == 3 && scale != 0)
                 return new Unknown64(machInst);
             // 30:24=0011110, 21=0
@@ -1452,13 +2602,15 @@ namespace Aarch64
                   default:
                     return new Unknown64(machInst);
                 }
+              default:
+                return new Unknown64(machInst);
             }
         } else {
             // 30=0, 28:24=11110, 21=1
             uint8_t type   = bits(machInst, 23, 22);
             uint8_t imm8   = bits(machInst, 20, 13);
-            IntRegIndex rd = (IntRegIndex)(uint32_t)bits(machInst, 4, 0);
-            IntRegIndex rn = (IntRegIndex)(uint32_t)bits(machInst, 9, 5);
+            RegIndex rd = (RegIndex)(uint32_t)bits(machInst, 4, 0);
+            RegIndex rn = (RegIndex)(uint32_t)bits(machInst, 9, 5);
             switch (bits(machInst, 11, 10)) {
               case 0x0:
                 if (bits(machInst, 12) == 1) {
@@ -1471,12 +2623,14 @@ namespace Aarch64
                     if (type == 0) {
                         // FMOV S[d] = imm8<7>:NOT(imm8<6>):Replicate(imm8<6>,5)
                         //             :imm8<5:0>:Zeros(19)
-                        uint32_t imm = vfp_modified_imm(imm8, false);
+                        uint32_t imm = vfp_modified_imm(imm8,
+                                                        FpDataType::Fp32);
                         return new FmovImmS(machInst, rd, imm);
                     } else if (type == 1) {
                         // FMOV D[d] = imm8<7>:NOT(imm8<6>):Replicate(imm8<6>,8)
                         //             :imm8<5:0>:Zeros(48)
-                        uint64_t imm = vfp_modified_imm(imm8, true);
+                        uint64_t imm = vfp_modified_imm(imm8,
+                                                        FpDataType::Fp64);
                         return new FmovImmD(machInst, rd, imm);
                     } else {
                         return new Unknown64(machInst);
@@ -1491,7 +2645,7 @@ namespace Aarch64
                     }
                     uint8_t switchVal = (bits(machInst, 4, 3) << 0) |
                                         (bits(machInst, 22) << 2);
-                    IntRegIndex rm = (IntRegIndex)(uint32_t)
+                    RegIndex rm = (RegIndex)(uint32_t)
                                         bits(machInst, 20, 16);
                     // 28:23=000111100, 21=1, 15:10=001000, 2:0=000
                     switch (switchVal) {
@@ -1776,6 +2930,8 @@ namespace Aarch64
                             if (rmode != 0)
                                 return new Unknown64(machInst);
                             return new FmovRegCoreW(machInst, rd, rn);
+                          case 2:
+                            return new FJcvtFpSFixedDW(machInst, rd, rn);
                           case 3: // FMOV Xd = Dn
                             if (rmode != 0)
                                 return new Unknown64(machInst);
@@ -1810,6 +2966,7 @@ namespace Aarch64
                         return new Unknown64(machInst);
                     }
                 }
+                GEM5_UNREACHABLE;
               case 0x1:
               {
                 if (bits(machInst, 31) ||
@@ -1817,9 +2974,9 @@ namespace Aarch64
                     bits(machInst, 23)) {
                     return new Unknown64(machInst);
                 }
-                IntRegIndex rm = (IntRegIndex)(uint32_t) bits(machInst, 20, 16);
-                IntRegIndex rn = (IntRegIndex)(uint32_t) bits(machInst, 9, 5);
-                uint8_t    imm = (IntRegIndex)(uint32_t) bits(machInst, 3, 0);
+                RegIndex rm = (RegIndex)(uint32_t) bits(machInst, 20, 16);
+                RegIndex rn = (RegIndex)(uint32_t) bits(machInst, 9, 5);
+                uint8_t    imm = (RegIndex)(uint32_t) bits(machInst, 3, 0);
                 ConditionCode cond =
                     (ConditionCode)(uint8_t)(bits(machInst, 15, 12));
                 uint8_t switchVal = (bits(machInst, 4) << 0) |
@@ -1851,9 +3008,9 @@ namespace Aarch64
                         bits(machInst, 23)) {
                     return new Unknown64(machInst);
                 }
-                IntRegIndex rd = (IntRegIndex)(uint32_t)bits(machInst,  4,  0);
-                IntRegIndex rn = (IntRegIndex)(uint32_t)bits(machInst,  9,  5);
-                IntRegIndex rm = (IntRegIndex)(uint32_t)bits(machInst, 20, 16);
+                RegIndex rd = (RegIndex)(uint32_t)bits(machInst,  4,  0);
+                RegIndex rn = (RegIndex)(uint32_t)bits(machInst,  9,  5);
+                RegIndex rm = (RegIndex)(uint32_t)bits(machInst, 20, 16);
                 uint8_t switchVal = (bits(machInst, 15, 12) << 0) |
                                     (bits(machInst, 22) << 4);
                 switch (switchVal) {
@@ -1902,9 +3059,9 @@ namespace Aarch64
                 if (bits(machInst, 31) || bits(machInst, 29))
                     return new Unknown64(machInst);
                 uint8_t type = bits(machInst, 23, 22);
-                IntRegIndex rd = (IntRegIndex)(uint32_t)bits(machInst,  4,  0);
-                IntRegIndex rn = (IntRegIndex)(uint32_t)bits(machInst,  9,  5);
-                IntRegIndex rm = (IntRegIndex)(uint32_t)bits(machInst, 20, 16);
+                RegIndex rd = (RegIndex)(uint32_t)bits(machInst,  4,  0);
+                RegIndex rn = (RegIndex)(uint32_t)bits(machInst,  9,  5);
+                RegIndex rm = (RegIndex)(uint32_t)bits(machInst, 20, 16);
                 ConditionCode cond =
                     (ConditionCode)(uint8_t)(bits(machInst, 15, 12));
                 if (type == 0) // FCSEL Sd = if cond then Sn else Sm
@@ -1914,9 +3071,11 @@ namespace Aarch64
                 else
                     return new Unknown64(machInst);
               }
+              default:
+                GEM5_UNREACHABLE;
             }
         }
-        return new FailUnimplemented("Unhandled Case4", machInst);
+        GEM5_UNREACHABLE;
     }
 }
 }};
@@ -1940,15 +3099,22 @@ namespace Aarch64
                 return decodeNeonSc3Diff(machInst);
             } else if (bits(machInst, 20, 17) == 0x0) {
                 return decodeNeonSc2RegMisc(machInst);
+            } else if (bits(machInst, 20, 17) == 0x4) {
+                return decodeCryptoTwoRegSHA(machInst);
             } else if (bits(machInst, 20, 17) == 0x8) {
                 return decodeNeonScPwise(machInst);
             } else {
                 return new Unknown64(machInst);
             }
+        } else if (bits(machInst, 15) && bits(machInst, 10) == 1) {
+            return decodeNeonSc3SameExtra(machInst);
         } else if (bits(machInst, 23, 22) == 0 &&
-                   bits(machInst, 15) == 0 &&
-                   bits(machInst, 10) == 1) {
-            return decodeNeonScCopy(machInst);
+                   bits(machInst, 15) == 0) {
+            if (bits(machInst, 10) == 1) {
+                return decodeNeonScCopy(machInst);
+            } else {
+                return decodeCryptoThreeRegSHA(machInst);
+            }
         } else {
             return new Unknown64(machInst);
         }
@@ -1986,52 +3152,12 @@ let {{
     decoder_output ='''
 namespace Aarch64
 {'''
-    for decoderFlavour, type_dict in decoders.iteritems():
+    for decoderFlavor, type_dict in decoders.items():
         decoder_output +='''
 template StaticInstPtr decodeFpAdvSIMD<%(df)sDecoder>(ExtMachInst machInst);
-''' % { "df" : decoderFlavour }
+''' % { "df" : decoderFlavor }
     decoder_output +='''
 }'''
-}};
-
-output decoder {{
-namespace Aarch64
-{
-    StaticInstPtr
-    decodeGem5Ops(ExtMachInst machInst)
-    {
-        const uint32_t m5func = bits(machInst, 23, 16);
-        switch (m5func) {
-          case 0x00: return new Arm(machInst);
-          case 0x01: return new Quiesce(machInst);
-          case 0x02: return new QuiesceNs64(machInst);
-          case 0x03: return new QuiesceCycles64(machInst);
-          case 0x04: return new QuiesceTime64(machInst);
-          case 0x07: return new Rpns64(machInst);
-          case 0x09: return new WakeCPU64(machInst);
-          case 0x10: return new Deprecated_ivlb(machInst);
-          case 0x11: return new Deprecated_ivle(machInst);
-          case 0x20: return new Deprecated_exit (machInst);
-          case 0x21: return new M5exit64(machInst);
-          case 0x22: return new M5fail64(machInst);
-          case 0x31: return new Loadsymbol(machInst);
-          case 0x30: return new Initparam64(machInst);
-          case 0x40: return new Resetstats64(machInst);
-          case 0x41: return new Dumpstats64(machInst);
-          case 0x42: return new Dumpresetstats64(machInst);
-          case 0x43: return new M5checkpoint64(machInst);
-          case 0x4F: return new M5writefile64(machInst);
-          case 0x50: return new M5readfile64(machInst);
-          case 0x51: return new M5break(machInst);
-          case 0x52: return new M5switchcpu(machInst);
-          case 0x53: return new M5addsymbol64(machInst);
-          case 0x54: return new M5panic(machInst);
-          case 0x5a: return new M5workbegin64(machInst);
-          case 0x5b: return new M5workend64(machInst);
-          default: return new Unknown64(machInst);
-        }
-    }
-}
 }};
 
 def format Aarch64() {{
@@ -2039,14 +3165,38 @@ def format Aarch64() {{
     {
         using namespace Aarch64;
         if (bits(machInst, 27) == 0x0) {
-            if (bits(machInst, 28) == 0x0)
-                return new Unknown64(machInst);
-            else if (bits(machInst, 26) == 0)
+            if (bits(machInst, 28) == 0x0) {
+                if (bits(machInst, 26) == 0x1) {
+                    if (bits(machInst, 31) == 0x0) {
+                        if (bits(machInst, 25) == 0x1) {
+                            return new Unknown64(machInst);
+                        }
+                        switch (bits(machInst, 30, 29)) {
+                            case 0x0:
+                            case 0x1:
+                            case 0x2:
+                            return decodeSveInt(machInst);
+                            case 0x3:
+                            return decodeSveFp(machInst);
+                        }
+                    } else {
+                            return decodeSveMem(machInst);
+                    }
+                } else {
+                    if ((bits(machInst, 25) == 0x0) && \
+                        (bits(machInst, 31) == 0x1)) {
+                        // bit 31:25=1xx0000
+                        return decodeSmeInst(machInst);
+                    } else {
+                        return new Unknown64(machInst);
+                    }
+                }
+            } else if (bits(machInst, 26) == 0)
                 // bit 28:26=100
                 return decodeDataProcImm(machInst);
             else
                 // bit 28:26=101
-                return decodeBranchExcSys(machInst);
+                return decodeBranchExcSys(*this, machInst);
         } else if (bits(machInst, 25) == 0) {
             // bit 27=1, 25=0
             return decodeLoadsStores(machInst);
@@ -2055,10 +3205,10 @@ def format Aarch64() {{
             return decodeDataProcReg(machInst);
         } else if (bits(machInst, 24) == 1 &&
                    bits(machInst, 31, 28) == 0xF) {
-            return decodeGem5Ops(machInst);
+            return new Gem5Op64(machInst);
         } else {
             // bit 27:25=111
-            switch(decoderFlavour){
+            switch(decoderFlavor){
             default:
                 return decodeFpAdvSIMD<GenericDecoder>(machInst);
             }

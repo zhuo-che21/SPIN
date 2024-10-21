@@ -35,11 +35,9 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Erfan Azarkhish
 
 from m5.params import *
-from XBar import *
+from m5.objects.XBar import *
 
 # References:
 # [1] http://www.open-silicon.com/open-silicon-ips/hmc/
@@ -68,6 +66,8 @@ from XBar import *
 # over them. Yet in this model, we have not made any such assumptions on the
 # address space.
 
+
 class HMCController(NoncoherentXBar):
-        type = 'HMCController'
-        cxx_header = "mem/hmc_controller.hh"
+    type = "HMCController"
+    cxx_header = "mem/hmc_controller.hh"
+    cxx_class = "gem5::HMCController"

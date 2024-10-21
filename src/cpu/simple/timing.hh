@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013,2015 ARM Limited
+ * Copyright (c) 2012-2013,2015,2018,2020-2021 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -36,23 +36,25 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Steve Reinhardt
  */
 
 #ifndef __CPU_SIMPLE_TIMING_HH__
 #define __CPU_SIMPLE_TIMING_HH__
 
+#include "arch/generic/mmu.hh"
 #include "cpu/simple/base.hh"
 #include "cpu/simple/exec_context.hh"
 #include "cpu/translation.hh"
-#include "params/TimingSimpleCPU.hh"
+#include "params/BaseTimingSimpleCPU.hh"
+
+namespace gem5
+{
 
 class TimingSimpleCPU : public BaseSimpleCPU
 {
   public:
 
-    TimingSimpleCPU(TimingSimpleCPUParams * params);
+    TimingSimpleCPU(const BaseTimingSimpleCPUParams &params);
     virtual ~TimingSimpleCPU();
 
     void init() override;
@@ -106,7 +108,7 @@ class TimingSimpleCPU : public BaseSimpleCPU
         }
     };
 
-    class FetchTranslation : public BaseTLB::Translation
+    class FetchTranslation : public BaseMMU::Translation
     {
       protected:
         TimingSimpleCPU *cpu;
@@ -124,8 +126,8 @@ class TimingSimpleCPU : public BaseSimpleCPU
         }
 
         void
-        finish(const Fault &fault, RequestPtr req, ThreadContext *tc,
-               BaseTLB::Mode mode)
+        finish(const Fault &fault, const RequestPtr &req, ThreadContext *tc,
+               BaseMMU::Mode mode)
         {
             cpu->sendFetch(fault, req, tc);
         }
@@ -133,15 +135,18 @@ class TimingSimpleCPU : public BaseSimpleCPU
     FetchTranslation fetchTranslation;
 
     void threadSnoop(PacketPtr pkt, ThreadID sender);
-    void sendData(RequestPtr req, uint8_t *data, uint64_t *res, bool read);
-    void sendSplitData(RequestPtr req1, RequestPtr req2, RequestPtr req,
+    void sendData(const RequestPtr &req,
+                  uint8_t *data, uint64_t *res, bool read);
+    void sendSplitData(const RequestPtr &req1, const RequestPtr &req2,
+                       const RequestPtr &req,
                        uint8_t *data, bool read);
 
     void translationFault(const Fault &fault);
 
-    PacketPtr buildPacket(RequestPtr req, bool read);
+    PacketPtr buildPacket(const RequestPtr &req, bool read);
     void buildSplitPacket(PacketPtr &pkt1, PacketPtr &pkt2,
-            RequestPtr req1, RequestPtr req2, RequestPtr req,
+            const RequestPtr &req1, const RequestPtr &req2,
+            const RequestPtr &req,
             uint8_t *data, bool read);
 
     bool handleReadPacket(PacketPtr pkt);
@@ -154,12 +159,13 @@ class TimingSimpleCPU : public BaseSimpleCPU
      * scheduling of handling of incoming packets in the following
      * cycle.
      */
-    class TimingCPUPort : public MasterPort
+    class TimingCPUPort : public RequestPort
     {
       public:
 
         TimingCPUPort(const std::string& _name, TimingSimpleCPU* _cpu)
-            : MasterPort(_name, _cpu), cpu(_cpu), retryRespEvent(this)
+            : RequestPort(_name), cpu(_cpu),
+              retryRespEvent([this]{ sendRetryResp(); }, name())
         { }
 
       protected:
@@ -176,7 +182,7 @@ class TimingSimpleCPU : public BaseSimpleCPU
             void schedule(PacketPtr _pkt, Tick t);
         };
 
-        EventWrapper<MasterPort, &MasterPort::sendRetryResp> retryRespEvent;
+        EventFunctionWrapper retryRespEvent;
     };
 
     class IcachePort : public TimingCPUPort
@@ -260,10 +266,10 @@ class TimingSimpleCPU : public BaseSimpleCPU
   protected:
 
      /** Return a reference to the data port. */
-    MasterPort &getDataPort() override { return dcachePort; }
+    Port &getDataPort() override { return dcachePort; }
 
     /** Return a reference to the instruction port. */
-    MasterPort &getInstPort() override { return icachePort; }
+    Port &getInstPort() override { return icachePort; }
 
   public:
 
@@ -278,17 +284,22 @@ class TimingSimpleCPU : public BaseSimpleCPU
     void activateContext(ThreadID thread_num) override;
     void suspendContext(ThreadID thread_num) override;
 
-    Fault readMem(Addr addr, uint8_t *data, unsigned size,
-                  Request::Flags flags) override;
-
     Fault initiateMemRead(Addr addr, unsigned size,
-                          Request::Flags flags) override;
+            Request::Flags flags,
+            const std::vector<bool>& byte_enable =std::vector<bool>())
+        override;
 
     Fault writeMem(uint8_t *data, unsigned size,
-                   Addr addr, Request::Flags flags, uint64_t *res) override;
+                   Addr addr, Request::Flags flags, uint64_t *res,
+                   const std::vector<bool>& byte_enable = std::vector<bool>())
+        override;
+
+    Fault initiateMemAMO(Addr addr, unsigned size, Request::Flags flags,
+                         AtomicOpFunctorPtr amo_op) override;
 
     void fetch();
-    void sendFetch(const Fault &fault, RequestPtr req, ThreadContext *tc);
+    void sendFetch(const Fault &fault,
+                   const RequestPtr &req, ThreadContext *tc);
     void completeIfetch(PacketPtr );
     void completeDataAccess(PacketPtr pkt);
     void advanceInst(const Fault &fault);
@@ -313,12 +324,18 @@ class TimingSimpleCPU : public BaseSimpleCPU
      */
     void finishTranslation(WholeTranslationState *state);
 
+    /** hardware transactional memory & TLBI operations **/
+    Fault initiateMemMgmtCmd(Request::Flags flags) override;
+
+    void htmSendAbortSignal(ThreadID tid, uint64_t htm_uid,
+                            HtmFailureFaultCause) override;
+
   private:
 
-    typedef EventWrapper<TimingSimpleCPU, &TimingSimpleCPU::fetch> FetchEvent;
-    FetchEvent fetchEvent;
+    EventFunctionWrapper fetchEvent;
 
-    struct IprEvent : Event {
+    struct IprEvent : Event
+    {
         Packet *pkt;
         TimingSimpleCPU *cpu;
         IprEvent(Packet *_pkt, TimingSimpleCPU *_cpu, Tick t);
@@ -342,11 +359,11 @@ class TimingSimpleCPU : public BaseSimpleCPU
      *     activated it can happen.
      * </ul>
      */
-    bool isDrained() {
+    bool isCpuDrained() const {
         SimpleExecContext& t_info = *threadInfo[curThread];
         SimpleThread* thread = t_info.thread;
 
-        return thread->microPC() == 0 && !t_info.stayAtPC &&
+        return thread->pcState().microPC() == 0 && !t_info.stayAtPC &&
                !fetchEvent.scheduled();
     }
 
@@ -357,5 +374,7 @@ class TimingSimpleCPU : public BaseSimpleCPU
      */
     bool tryCompleteDrain();
 };
+
+} // namespace gem5
 
 #endif // __CPU_SIMPLE_TIMING_HH__

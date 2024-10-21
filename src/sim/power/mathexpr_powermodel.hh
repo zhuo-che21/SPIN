@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 ARM Limited
+ * Copyright (c) 2016-2017, 2020 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -33,8 +33,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: David Guillen Fandos
  */
 
 #ifndef __SIM_MATHEXPR_POWERMODEL_PM_HH__
@@ -42,11 +40,17 @@
 
 #include <unordered_map>
 
-#include "base/statistics.hh"
 #include "params/MathExprPowerModel.hh"
 #include "sim/mathexpr.hh"
 #include "sim/power/power_model.hh"
-#include "sim/sim_object.hh"
+
+namespace gem5
+{
+
+namespace statistics
+{
+    class Info;
+}
 
 /**
  * A Equation power model. The power is represented as a combination
@@ -57,31 +61,21 @@ class MathExprPowerModel : public PowerModelState
   public:
 
     typedef MathExprPowerModelParams Params;
-    MathExprPowerModel(const Params *p);
+    MathExprPowerModel(const Params &p);
 
     /**
      * Get the dynamic power consumption.
      *
      * @return Power (Watts) consumed by this object (dynamic component)
      */
-    double getDynamicPower() const {
-        return dyn_expr.eval(
-            std::bind(&MathExprPowerModel::getStatValue,
-                this, std::placeholders::_1)
-        );
-    }
+    double getDynamicPower() const override { return eval(dyn_expr); }
 
     /**
      * Get the static power consumption.
      *
      * @return Power (Watts) consumed by this object (static component)
      */
-    double getStaticPower() const {
-        return st_expr.eval(
-            std::bind(&MathExprPowerModel::getStatValue,
-                this, std::placeholders::_1)
-        );
-    }
+    double getStaticPower() const override { return eval(st_expr); }
 
     /**
      * Get the value for a variable (maps to a stat)
@@ -92,20 +86,26 @@ class MathExprPowerModel : public PowerModelState
      */
     double getStatValue(const std::string & name) const;
 
-    void startup();
-
-    void regStats();
+    void startup() override;
+    void regStats() override;
 
   private:
+    /**
+     * Evaluate an expression in the context of this object, fatal if
+     * evaluation fails.
+     *
+     * @param expr Expression to evaluate
+     * @return Value of expression.
+     */
+    double eval(const MathExpr &expr) const;
 
     // Math expressions for dynamic and static power
     MathExpr dyn_expr, st_expr;
 
-    // Basename of the object in the gem5 stats hierachy
-    std::string basename;
-
     // Map that contains relevant stats for this power model
-    std::unordered_map<std::string, Stats::Info*> stats_map;
+    std::unordered_map<std::string, const statistics::Info*> statsMap;
 };
+
+} // namespace gem5
 
 #endif

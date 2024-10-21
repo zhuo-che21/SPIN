@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 ARM Limited
+ * Copyright (c) 2013,2018 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -33,8 +33,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Matt Evans
  */
 
 
@@ -57,10 +55,12 @@
 
 #include "base/addr_range.hh"
 #include "base/bitunion.hh"
-#include "cpu/intr_control.hh"
 #include "dev/io_device.hh"
 #include "dev/platform.hh"
 #include "params/VGic.hh"
+
+namespace gem5
+{
 
 class VGic : public PioDevice
 {
@@ -103,23 +103,12 @@ class VGic : public PioDevice
 
     static const uint32_t LR_PENDING    = 1;
     static const uint32_t LR_ACTIVE     = 2;
+    const uint32_t gicvIIDR;
 
-    /** Event definition to post interrupt to CPU after a delay
-    */
-    class PostVIntEvent : public Event
-    {
-      private:
-        uint32_t cpu;
-        Platform *platform;
-      public:
-        PostVIntEvent( uint32_t c, Platform* p)
-            : cpu(c), platform(p)
-        { }
-        void process() { platform->intrctrl->post(cpu, ArmISA::INT_VIRT_IRQ, 0);}
-        const char *description() const { return "Post VInterrupt to CPU"; }
-    };
+    /** Post interrupt to CPU */
+    void processPostVIntEvent(uint32_t cpu);
 
-    PostVIntEvent *postVIntEvent[VGIC_CPU_MAX];
+    EventFunctionWrapper *postVIntEvent[VGIC_CPU_MAX];
     bool        maintIntPosted[VGIC_CPU_MAX];
     bool        vIntPosted[VGIC_CPU_MAX];
 
@@ -165,7 +154,8 @@ class VGic : public PioDevice
     /* State per CPU.  EVERYTHING should be in this struct and simply replicated
      * N times.
      */
-    struct vcpuIntData : public Serializable {
+    struct vcpuIntData : public Serializable
+    {
         vcpuIntData()
             : vctrl(0), hcr(0), eisr(0), VMGrp0En(0), VMGrp1En(0),
               VMAckCtl(0), VMFiqEn(0), VMCBPR(0), VEM(0), VMABP(0), VMBP(0),
@@ -199,13 +189,9 @@ class VGic : public PioDevice
     struct std::array<vcpuIntData, VGIC_CPU_MAX>  vcpuData;
 
   public:
-   typedef VGicParams Params;
-   const Params *
-    params() const
-    {
-        return dynamic_cast<const Params *>(_params);
-    }
-    VGic(const Params *p);
+    using Params = VGicParams;
+    VGic(const Params &p);
+    ~VGic();
 
     AddrRangeList getAddrRanges() const override;
 
@@ -273,5 +259,7 @@ class VGic : public PioDevice
         return -1;
     }
 };
+
+} // namespace gem5
 
 #endif

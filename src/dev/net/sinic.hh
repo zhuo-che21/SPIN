@@ -24,13 +24,12 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 #ifndef __DEV_NET_SINIC_HH__
 #define __DEV_NET_SINIC_HH__
 
+#include "base/compiler.hh"
 #include "base/inet.hh"
 #include "base/statistics.hh"
 #include "dev/io_device.hh"
@@ -43,7 +42,11 @@
 #include "params/Sinic.hh"
 #include "sim/eventq.hh"
 
-namespace Sinic {
+namespace gem5
+{
+
+namespace sinic
+{
 
 class Interface;
 class Base : public EtherDevBase
@@ -61,9 +64,7 @@ class Base : public EtherDevBase
     void cpuInterrupt();
     void cpuIntrClear();
 
-    typedef EventWrapper<Base, &Base::cpuInterrupt> IntrEvent;
-    friend void IntrEvent::process();
-    IntrEvent *intrEvent;
+    EventFunctionWrapper *intrEvent;
     Interface *interface;
 
     bool cpuIntrPending() const;
@@ -80,16 +81,16 @@ class Base : public EtherDevBase
  * Construction/Destruction/Parameters
  */
   public:
-    typedef SinicParams Params;
-    const Params *params() const { return (const Params *)_params; }
-    Base(const Params *p);
+    PARAMS(Sinic);
+    Base(const Params &p);
 };
 
 class Device : public Base
 {
   protected:
     /** Receive State Machine States */
-    enum RxState {
+    enum RxState
+    {
         rxIdle,
         rxFifoBlock,
         rxBeginCopy,
@@ -98,7 +99,8 @@ class Device : public Base
     };
 
     /** Transmit State Machine states */
-    enum TxState {
+    enum TxState
+    {
         txIdle,
         txFifoBlock,
         txBeginCopy,
@@ -107,7 +109,8 @@ class Device : public Base
     };
 
     /** device register file */
-    struct {
+    struct
+    {
         uint32_t Config;       // 0x00
         uint32_t Command;      // 0x04
         uint32_t IntrStatus;   // 0x08
@@ -134,7 +137,8 @@ class Device : public Base
         uint64_t RxStatus;     // 0x78
     } regs;
 
-    struct VirtualReg {
+    struct VirtualReg
+    {
         uint64_t RxData;
         uint64_t RxDone;
         uint64_t TxData;
@@ -196,13 +200,9 @@ class Device : public Base
 
     void rxKick();
     Tick rxKickTick;
-    typedef EventWrapper<Device, &Device::rxKick> RxKickEvent;
-    friend void RxKickEvent::process();
 
     void txKick();
     Tick txKickTick;
-    typedef EventWrapper<Device, &Device::txKick> TxKickEvent;
-    friend void TxKickEvent::process();
 
     /**
      * Retransmit event
@@ -214,9 +214,7 @@ class Device : public Base
         if (txState == txFifoBlock)
             txKick();
     }
-    typedef EventWrapper<Device, &Device::txEventTransmit> TxEvent;
-    friend void TxEvent::process();
-    TxEvent txEvent;
+    EventFunctionWrapper txEvent;
 
     void txDump() const;
     void rxDump() const;
@@ -238,19 +236,18 @@ class Device : public Base
   public:
     bool recvPacket(EthPacketPtr packet);
     void transferDone();
-    EtherInt *getEthPort(const std::string &if_name, int idx) override;
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
 
 /**
  * DMA parameters
  */
   protected:
     void rxDmaDone();
-    friend class EventWrapper<Device, &Device::rxDmaDone>;
-    EventWrapper<Device, &Device::rxDmaDone> rxDmaEvent;
+    EventFunctionWrapper rxDmaEvent;
 
     void txDmaDone();
-    friend class EventWrapper<Device, &Device::txDmaDone>;
-    EventWrapper<Device, &Device::txDmaDone> txDmaEvent;
+    EventFunctionWrapper txDmaEvent;
 
     Tick dmaReadDelay;
     Tick dmaReadFactor;
@@ -262,7 +259,7 @@ class Device : public Base
  */
   protected:
     void devIntrPost(uint32_t interrupts);
-    void devIntrClear(uint32_t interrupts = Regs::Intr_All);
+    void devIntrClear(uint32_t interrupts = registers::Intr_All);
     void devIntrChangeMask(uint32_t newmask);
 
 /**
@@ -282,15 +279,20 @@ class Device : public Base
  * Statistics
  */
   private:
-    Stats::Scalar totalVnicDistance;
-    Stats::Scalar numVnicDistance;
-    Stats::Scalar maxVnicDistance;
-    Stats::Formula avgVnicDistance;
+    struct DeviceStats : public statistics::Group
+    {
+        DeviceStats(statistics::Group *parent);
 
-    int _maxVnicDistance;
+        statistics::Scalar totalVnicDistance;
+        statistics::Scalar numVnicDistance;
+        statistics::Scalar maxVnicDistance;
+        statistics::Formula avgVnicDistance;
+
+        int _maxVnicDistance;
+    } sinicDeviceStats;
+
 
   public:
-    void regStats() override;
     void resetStats() override;
 
 /**
@@ -301,7 +303,7 @@ class Device : public Base
     void unserialize(CheckpointIn &cp) override;
 
   public:
-    Device(const Params *p);
+    Device(const Params &p);
     ~Device();
 };
 
@@ -322,6 +324,7 @@ class Interface : public EtherInt
     virtual void sendDone() { dev->transferDone(); }
 };
 
-} // namespace Sinic
+} // namespace sinic
+} // namespace gem5
 
 #endif // __DEV_NET_SINIC_HH__

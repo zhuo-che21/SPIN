@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2020-2021 ARM Limited
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2009 Mark D. Hill and David A. Wood
  * All rights reserved.
  *
@@ -26,21 +38,25 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef __MEM_RUBY_SLICC_INTERFACE_RUBY_REQUEST_HH__
-#define __MEM_RUBY_SLICC_INTERFACE_RUBY_REQUEST_HH__
+#ifndef __MEM_RUBY_SLICC_INTERFACE_RUBYREQUEST_HH__
+#define __MEM_RUBY_SLICC_INTERFACE_RUBYREQUEST_HH__
 
 #include <ostream>
 #include <vector>
 
-#include "mem/protocol/HSAScope.hh"
-#include "mem/protocol/HSASegment.hh"
-#include "mem/protocol/Message.hh"
-#include "mem/protocol/PrefetchBit.hh"
-#include "mem/protocol/RubyAccessMode.hh"
-#include "mem/protocol/RubyRequestType.hh"
 #include "mem/ruby/common/Address.hh"
 #include "mem/ruby/common/DataBlock.hh"
 #include "mem/ruby/common/WriteMask.hh"
+#include "mem/ruby/protocol/Message.hh"
+#include "mem/ruby/protocol/PrefetchBit.hh"
+#include "mem/ruby/protocol/RubyAccessMode.hh"
+#include "mem/ruby/protocol/RubyRequestType.hh"
+
+namespace gem5
+{
+
+namespace ruby
+{
 
 class RubyRequest : public Message
 {
@@ -52,22 +68,27 @@ class RubyRequest : public Message
     RubyAccessMode m_AccessMode;
     int m_Size;
     PrefetchBit m_Prefetch;
-    uint8_t* data;
     PacketPtr m_pkt;
     ContextID m_contextId;
     WriteMask m_writeMask;
     DataBlock m_WTData;
     int m_wfid;
-    HSAScope m_scope;
-    HSASegment m_segment;
+    uint64_t m_instSeqNum;
+    bool m_htmFromTransaction;
+    uint64_t m_htmTransactionUid;
+    bool m_isTlbi;
+    // Should be uint64, but SLICC complains about casts
+    Addr m_tlbiTransactionUid;
+    // GPU cache bypass flags. GLC bypasses L1 while SLC bypasses both L1 and
+    // L2 if set to true. They are set to false by default and they must be
+    // explicitly set to true in the program in order to bypass caches
+    bool m_isGLCSet;
+    bool m_isSLCSet;
 
-
-    RubyRequest(Tick curTime, uint64_t _paddr, uint8_t* _data, int _len,
+    RubyRequest(Tick curTime, uint64_t _paddr, int _len,
         uint64_t _pc, RubyRequestType _type, RubyAccessMode _access_mode,
         PacketPtr _pkt, PrefetchBit _pb = PrefetchBit_No,
-        ContextID _proc_id = 100, ContextID _core_id = 99,
-        HSAScope _scope = HSAScope_UNSPECIFIED,
-        HSASegment _segment = HSASegment_GLOBAL)
+        ContextID _proc_id = 100, ContextID _core_id = 99)
         : Message(curTime),
           m_PhysicalAddress(_paddr),
           m_Type(_type),
@@ -75,23 +96,58 @@ class RubyRequest : public Message
           m_AccessMode(_access_mode),
           m_Size(_len),
           m_Prefetch(_pb),
-          data(_data),
           m_pkt(_pkt),
           m_contextId(_core_id),
-          m_scope(_scope),
-          m_segment(_segment)
+          m_htmFromTransaction(false),
+          m_htmTransactionUid(0),
+          m_isTlbi(false),
+          m_tlbiTransactionUid(0)
     {
         m_LineAddress = makeLineAddress(m_PhysicalAddress);
+        if (_pkt) {
+            m_isGLCSet = m_pkt->req->isGLCSet();
+            m_isSLCSet = m_pkt->req->isSLCSet();
+        } else {
+            m_isGLCSet = 0;
+            m_isSLCSet = 0;
+        }
     }
 
-    RubyRequest(Tick curTime, uint64_t _paddr, uint8_t* _data, int _len,
+    /** RubyRequest for memory management commands */
+    RubyRequest(Tick curTime,
+        uint64_t _pc, RubyRequestType _type, RubyAccessMode _access_mode,
+        PacketPtr _pkt, ContextID _proc_id, ContextID _core_id)
+        : Message(curTime),
+          m_PhysicalAddress(0),
+          m_Type(_type),
+          m_ProgramCounter(_pc),
+          m_AccessMode(_access_mode),
+          m_Size(0),
+          m_Prefetch(PrefetchBit_No),
+          m_pkt(_pkt),
+          m_contextId(_core_id),
+          m_htmFromTransaction(false),
+          m_htmTransactionUid(0),
+          m_isTlbi(false),
+          m_tlbiTransactionUid(0)
+    {
+        assert(m_pkt->req->isMemMgmt());
+        if (_pkt) {
+            m_isGLCSet = m_pkt->req->isGLCSet();
+            m_isSLCSet = m_pkt->req->isSLCSet();
+        } else {
+            m_isGLCSet = 0;
+            m_isSLCSet = 0;
+        }
+    }
+
+    RubyRequest(Tick curTime, uint64_t _paddr, int _len,
         uint64_t _pc, RubyRequestType _type,
         RubyAccessMode _access_mode, PacketPtr _pkt, PrefetchBit _pb,
         unsigned _proc_id, unsigned _core_id,
         int _wm_size, std::vector<bool> & _wm_mask,
         DataBlock & _Data,
-        HSAScope _scope = HSAScope_UNSPECIFIED,
-        HSASegment _segment = HSASegment_GLOBAL)
+        uint64_t _instSeqNum = 0)
         : Message(curTime),
           m_PhysicalAddress(_paddr),
           m_Type(_type),
@@ -99,27 +155,35 @@ class RubyRequest : public Message
           m_AccessMode(_access_mode),
           m_Size(_len),
           m_Prefetch(_pb),
-          data(_data),
           m_pkt(_pkt),
           m_contextId(_core_id),
           m_writeMask(_wm_size,_wm_mask),
           m_WTData(_Data),
           m_wfid(_proc_id),
-          m_scope(_scope),
-          m_segment(_segment)
+          m_instSeqNum(_instSeqNum),
+          m_htmFromTransaction(false),
+          m_htmTransactionUid(0),
+          m_isTlbi(false),
+          m_tlbiTransactionUid(0)
     {
         m_LineAddress = makeLineAddress(m_PhysicalAddress);
+        if (_pkt) {
+            m_isGLCSet = m_pkt->req->isGLCSet();
+            m_isSLCSet = m_pkt->req->isSLCSet();
+        } else {
+            m_isGLCSet = 0;
+            m_isSLCSet = 0;
+        }
     }
 
-    RubyRequest(Tick curTime, uint64_t _paddr, uint8_t* _data, int _len,
+    RubyRequest(Tick curTime, uint64_t _paddr, int _len,
         uint64_t _pc, RubyRequestType _type,
         RubyAccessMode _access_mode, PacketPtr _pkt, PrefetchBit _pb,
         unsigned _proc_id, unsigned _core_id,
         int _wm_size, std::vector<bool> & _wm_mask,
         DataBlock & _Data,
         std::vector< std::pair<int,AtomicOpFunctor*> > _atomicOps,
-        HSAScope _scope = HSAScope_UNSPECIFIED,
-        HSASegment _segment = HSASegment_GLOBAL)
+        uint64_t _instSeqNum = 0)
         : Message(curTime),
           m_PhysicalAddress(_paddr),
           m_Type(_type),
@@ -127,18 +191,27 @@ class RubyRequest : public Message
           m_AccessMode(_access_mode),
           m_Size(_len),
           m_Prefetch(_pb),
-          data(_data),
           m_pkt(_pkt),
           m_contextId(_core_id),
           m_writeMask(_wm_size,_wm_mask,_atomicOps),
           m_WTData(_Data),
           m_wfid(_proc_id),
-          m_scope(_scope),
-          m_segment(_segment)
+          m_instSeqNum(_instSeqNum),
+          m_htmFromTransaction(false),
+          m_htmTransactionUid(0),
+          m_isTlbi(false),
+          m_tlbiTransactionUid(0)
     {
         m_LineAddress = makeLineAddress(m_PhysicalAddress);
-    }
+        if (_pkt) {
+            m_isGLCSet = m_pkt->req->isGLCSet();
+            m_isSLCSet = m_pkt->req->isSLCSet();
 
+        } else {
+            m_isGLCSet = 0;
+            m_isSLCSet = 0;
+        }
+    }
 
     RubyRequest(Tick curTime) : Message(curTime) {}
     MsgPtr clone() const
@@ -151,9 +224,11 @@ class RubyRequest : public Message
     const RubyAccessMode& getAccessMode() const { return m_AccessMode; }
     const int& getSize() const { return m_Size; }
     const PrefetchBit& getPrefetch() const { return m_Prefetch; }
+    RequestPtr getRequestPtr() const { return m_pkt->req; }
 
     void print(std::ostream& out) const;
     bool functionalRead(Packet *pkt);
+    bool functionalRead(Packet *pkt, WriteMask &mask);
     bool functionalWrite(Packet *pkt);
 };
 
@@ -165,4 +240,7 @@ operator<<(std::ostream& out, const RubyRequest& obj)
   return out;
 }
 
-#endif  // __MEM_RUBY_SLICC_INTERFACE_RUBY_REQUEST_HH__
+} // namespace ruby
+} // namespace gem5
+
+#endif  //__MEM_RUBY_SLICC_INTERFACE_RUBYREQUEST_HH__

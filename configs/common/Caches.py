@@ -1,4 +1,5 @@
 # Copyright (c) 2012 ARM Limited
+# Copyright (c) 2020 Barkhausen Institut
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -35,10 +36,11 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Lisa Hsu
 
+from m5.defines import buildEnv
 from m5.objects import *
+from gem5.isas import ISA
+from gem5.runtime import get_runtime_isa
 
 # Base implementations of L1, L2, IO and TLB-walker caches. There are
 # used in the regressions and also as base components in the
@@ -46,47 +48,57 @@ from m5.objects import *
 # starting point, and specific parameters can be overridden in the
 # specific instantiations.
 
+
 class L1Cache(Cache):
     assoc = 2
-    hit_latency = 2
+    tag_latency = 2
+    data_latency = 2
     response_latency = 2
     mshrs = 4
     tgts_per_mshr = 20
+
 
 class L1_ICache(L1Cache):
     is_read_only = True
     # Writeback clean lines as well
     writeback_clean = True
 
+
 class L1_DCache(L1Cache):
     pass
 
+
 class L2Cache(Cache):
     assoc = 8
-    hit_latency = 20
+    tag_latency = 20
+    data_latency = 20
     response_latency = 20
     mshrs = 20
     tgts_per_mshr = 12
     write_buffers = 8
 
+
 class IOCache(Cache):
     assoc = 8
-    hit_latency = 50
+    tag_latency = 50
+    data_latency = 50
     response_latency = 50
     mshrs = 20
-    size = '1kB'
+    size = "1kB"
     tgts_per_mshr = 12
+
 
 class PageTableWalkerCache(Cache):
     assoc = 2
-    hit_latency = 2
+    tag_latency = 2
+    data_latency = 2
     response_latency = 2
     mshrs = 10
-    size = '1kB'
+    size = "1kB"
     tgts_per_mshr = 12
 
     # the x86 table walker actually writes to the table-walker cache
-    if buildEnv['TARGET_ISA'] == 'x86':
+    if get_runtime_isa() in [ISA.X86, ISA.RISCV]:
         is_read_only = False
     else:
         is_read_only = True

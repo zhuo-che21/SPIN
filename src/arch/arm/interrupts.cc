@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2012-2013, 2016 ARM Limited
+ * Copyright (c) 2009, 2012-2013, 2016, 2019 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -33,39 +33,28 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Ali Saidi
  */
 
 #include "arch/arm/interrupts.hh"
+
 #include "arch/arm/system.hh"
 
-ArmISA::Interrupts *
-ArmInterruptsParams::create()
+namespace gem5
 {
-    return new ArmISA::Interrupts(this);
-}
 
 bool
-ArmISA::Interrupts::takeInt(ThreadContext *tc, InterruptTypes int_type) const
+ArmISA::Interrupts::takeInt(InterruptTypes int_type) const
 {
     // Table G1-17~19 of ARM V8 ARM
     InterruptMask mask;
     bool highest_el_is_64 = ArmSystem::highestELIs64(tc);
 
     CPSR cpsr = tc->readMiscReg(MISCREG_CPSR);
-    SCR scr;
-    HCR hcr;
-    hcr = tc->readMiscReg(MISCREG_HCR);
-    ExceptionLevel el = (ExceptionLevel) ((uint32_t) cpsr.el);
+    SCR scr = tc->readMiscReg(MISCREG_SCR_EL3);;
+    HCR hcr = tc->readMiscReg(MISCREG_HCR_EL2);
+    ExceptionLevel el = currEL(tc);
     bool cpsr_mask_bit, scr_routing_bit, scr_fwaw_bit, hcr_mask_override_bit;
-
-    if (!highest_el_is_64)
-        scr = tc->readMiscReg(MISCREG_SCR);
-    else
-        scr = tc->readMiscReg(MISCREG_SCR_EL3);
-
-    bool is_secure = inSecureState(tc);
+    bool is_secure = isSecure(tc);
 
     switch(int_type) {
       case INT_FIQ:
@@ -163,3 +152,4 @@ ArmISA::Interrupts::takeInt(ThreadContext *tc, InterruptTypes int_type) const
             (mask != INT_MASK_P);
 }
 
+} // namespace gem5

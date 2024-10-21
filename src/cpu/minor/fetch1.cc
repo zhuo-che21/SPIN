@@ -33,27 +33,33 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Andrew Bardsley
  */
+
+#include "cpu/minor/fetch1.hh"
 
 #include <cstring>
 #include <iomanip>
 #include <sstream>
 
+#include "arch/generic/decoder.hh"
 #include "base/cast.hh"
-#include "cpu/minor/fetch1.hh"
+#include "base/compiler.hh"
+#include "base/logging.hh"
+#include "base/trace.hh"
 #include "cpu/minor/pipeline.hh"
 #include "debug/Drain.hh"
 #include "debug/Fetch.hh"
 #include "debug/MinorTrace.hh"
 
-namespace Minor
+namespace gem5
+{
+
+namespace minor
 {
 
 Fetch1::Fetch1(const std::string &name_,
     MinorCPU &cpu_,
-    MinorCPUParams &params,
+    const BaseMinorCPUParams &params,
     Latch<BranchData>::Output inp_,
     Latch<ForwardLineData>::Input out_,
     Latch<BranchData>::Output prediction_,
@@ -77,6 +83,9 @@ Fetch1::Fetch1(const std::string &name_,
     numFetchesInMemorySystem(0),
     numFetchesInITLB(0)
 {
+    for (auto &info: fetchInfo)
+        info.pc.reset(params.isa[0]->newPCState());
+
     if (lineSnap == 0) {
         lineSnap = cpu.cacheLineSize();
         DPRINTF(Fetch, "lineSnap set to cache line size of: %d\n",
@@ -89,20 +98,19 @@ Fetch1::Fetch1(const std::string &name_,
             maxLineWidth);
     }
 
+    size_t inst_size = cpu.threads[0]->decoder->moreBytesSize();
+
     /* These assertions should be copied to the Python config. as well */
-    if ((lineSnap % sizeof(TheISA::MachInst)) != 0) {
+    if ((lineSnap % inst_size) != 0) {
         fatal("%s: fetch1LineSnapWidth must be a multiple "
-            "of sizeof(TheISA::MachInst) (%d)\n", name_,
-            sizeof(TheISA::MachInst));
+            "of the inst width (%d)\n", name_,
+            inst_size);
     }
 
-    if (!(maxLineWidth >= lineSnap &&
-        (maxLineWidth % sizeof(TheISA::MachInst)) == 0))
-    {
+    if ((maxLineWidth >= lineSnap && (maxLineWidth % inst_size)) != 0) {
         fatal("%s: fetch1LineWidth must be a multiple of"
-            " sizeof(TheISA::MachInst)"
-            " (%d), and >= fetch1LineSnapWidth (%d)\n",
-            name_, sizeof(TheISA::MachInst), lineSnap);
+            " the inst width (%d), and >= fetch1LineSnapWidth (%d)\n",
+            name_, inst_size, lineSnap);
     }
 
     if (fetchLimit < 1) {
@@ -118,13 +126,13 @@ Fetch1::getScheduledThread()
     std::vector<ThreadID> priority_list;
 
     switch (cpu.threadPolicy) {
-      case Enums::SingleThreaded:
+      case enums::SingleThreaded:
         priority_list.push_back(0);
         break;
-      case Enums::RoundRobin:
+      case enums::RoundRobin:
         priority_list = cpu.roundRobinPriority(threadPriority);
         break;
-      case Enums::Random:
+      case enums::Random:
         priority_list = cpu.randomPriority();
         break;
       default:
@@ -152,7 +160,7 @@ Fetch1::fetchLine(ThreadID tid)
     /* If line_offset != 0, a request is pushed for the remainder of the
      * line. */
     /* Use a lower, sizeof(MachInst) aligned address for the fetch */
-    Addr aligned_pc = thread.pc.instAddr() & ~((Addr) lineSnap - 1);
+    Addr aligned_pc = thread.fetchAddr & ~((Addr) lineSnap - 1);
     unsigned int line_offset = aligned_pc % lineSnap;
     unsigned int request_size = maxLineWidth - line_offset;
 
@@ -161,17 +169,18 @@ Fetch1::fetchLine(ThreadID tid)
         thread.streamSeqNum, thread.predictionSeqNum,
         lineSeqNum);
 
-    FetchRequestPtr request = new FetchRequest(*this, request_id, thread.pc);
+    FetchRequestPtr request = new FetchRequest(*this, request_id,
+            thread.fetchAddr);
 
     DPRINTF(Fetch, "Inserting fetch into the fetch queue "
         "%s addr: 0x%x pc: %s line_offset: %d request_size: %d\n",
-        request_id, aligned_pc, thread.pc, line_offset, request_size);
+        request_id, aligned_pc, thread.fetchAddr, line_offset, request_size);
 
-    request->request.setContext(cpu.threads[tid]->getTC()->contextId());
-    request->request.setVirt(0 /* asid */,
-        aligned_pc, request_size, Request::INST_FETCH, cpu.instMasterId(),
+    request->request->setContext(cpu.threads[tid]->getTC()->contextId());
+    request->request->setVirt(
+        aligned_pc, request_size, Request::INST_FETCH, cpu.instRequestorId(),
         /* I've no idea why we need the PC, but give it */
-        thread.pc.instAddr());
+        thread.fetchAddr);
 
     DPRINTF(Fetch, "Submitting ITLB request\n");
     numFetchesInITLB++;
@@ -185,25 +194,17 @@ Fetch1::fetchLine(ThreadID tid)
     /* Submit the translation request.  The response will come
      *  through finish/markDelayed on this request as it bears
      *  the Translation interface */
-    cpu.threads[request->id.threadId]->itb->translateTiming(
-        &request->request,
+    cpu.threads[request->id.threadId]->mmu->translateTiming(
+        request->request,
         cpu.getContext(request->id.threadId),
-        request, BaseTLB::Execute);
+        request, BaseMMU::Execute);
 
     lineSeqNum++;
 
     /* Step the PC for the next line onto the line aligned next address.
      * Note that as instructions can span lines, this PC is only a
      * reliable 'new' PC if the next line has a new stream sequence number. */
-#if THE_ISA == ALPHA_ISA
-    /* Restore the low bits of the PC used as address space flags */
-    Addr pc_low_bits = thread.pc.instAddr() &
-        ((Addr) (1 << sizeof(TheISA::MachInst)) - 1);
-
-    thread.pc.set(aligned_pc + request_size + pc_low_bits);
-#else
-    thread.pc.set(aligned_pc + request_size);
-#endif
+    thread.fetchAddr = aligned_pc + request_size;
 }
 
 std::ostream &
@@ -227,7 +228,7 @@ void
 Fetch1::FetchRequest::makePacket()
 {
     /* Make the necessary packet for a memory transaction */
-    packet = new Packet(&request, MemCmd::ReadReq);
+    packet = new Packet(request, MemCmd::ReadReq);
     packet->allocate();
 
     /* This FetchRequest becomes SenderState to allow the response to be
@@ -236,8 +237,8 @@ Fetch1::FetchRequest::makePacket()
 }
 
 void
-Fetch1::FetchRequest::finish(const Fault &fault_, RequestPtr request_,
-                             ThreadContext *tc, BaseTLB::Mode mode)
+Fetch1::FetchRequest::finish(const Fault &fault_, const RequestPtr &request_,
+                             ThreadContext *tc, BaseMMU::Mode mode)
 {
     fault = fault_;
 
@@ -257,10 +258,11 @@ Fetch1::handleTLBResponse(FetchRequestPtr response)
         DPRINTF(Fetch, "Fault in address ITLB translation: %s, "
             "paddr: 0x%x, vaddr: 0x%x\n",
             response->fault->name(),
-            (response->request.hasPaddr() ? response->request.getPaddr() : 0),
-            response->request.getVaddr());
+            (response->request->hasPaddr() ?
+                response->request->getPaddr() : 0),
+            response->request->getVaddr());
 
-        if (DTRACE(MinorTrace))
+        if (debug::MinorTrace)
             minorTraceResponseLine(name(), response);
     } else {
         DPRINTF(Fetch, "Got ITLB response\n");
@@ -396,18 +398,18 @@ void
 Fetch1::minorTraceResponseLine(const std::string &name,
     Fetch1::FetchRequestPtr response) const
 {
-    Request &request M5_VAR_USED = response->request;
+    const RequestPtr &request = response->request;
 
     if (response->packet && response->packet->isError()) {
-        MINORLINE(this, "id=F;%s vaddr=0x%x fault=\"error packet\"\n",
-            response->id, request.getVaddr());
+        minorLine(*this, "id=F;%s vaddr=0x%x fault=\"error packet\"\n",
+            response->id, request->getVaddr());
     } else if (response->fault != NoFault) {
-        MINORLINE(this, "id=F;%s vaddr=0x%x fault=\"%s\"\n",
-            response->id, request.getVaddr(), response->fault->name());
+        minorLine(*this, "id=F;%s vaddr=0x%x fault=\"%s\"\n",
+            response->id, request->getVaddr(), response->fault->name());
     } else {
-        MINORLINE(this, "id=%s size=%d vaddr=0x%x paddr=0x%x\n",
-            response->id, request.getSize(),
-            request.getVaddr(), request.getPaddr());
+        minorLine(*this, "id=%s size=%d vaddr=0x%x paddr=0x%x\n",
+            response->id, request->getSize(),
+            request->getVaddr(), request->getPaddr());
     }
 }
 
@@ -429,7 +431,7 @@ Fetch1::recvTimingResp(PacketPtr response)
     numFetchesInMemorySystem--;
     fetch_request->state = FetchRequest::Complete;
 
-    if (DTRACE(MinorTrace))
+    if (debug::MinorTrace)
         minorTraceResponseLine(name(), fetch_request);
 
     if (response->isError()) {
@@ -512,7 +514,8 @@ Fetch1::changeStream(const BranchData &branch)
         thread.state = FetchRunning;
         break;
     }
-    thread.pc = branch.target;
+    set(thread.pc, branch.target);
+    thread.fetchAddr = thread.pc->instAddr();
 }
 
 void
@@ -545,11 +548,13 @@ Fetch1::processResponse(Fetch1::FetchRequestPtr response,
     line.setFault(response->fault);
     /* Make sequence numbers valid in return */
     line.id = response->id;
-    /* Set PC to virtual address */
-    line.pc = response->pc;
+    /* Set the PC in case there was a sequence change */
+    set(line.pc, thread.pc);
+    /* Set fetch address to virtual address */
+    line.fetchAddr = response->pc;
     /* Set the lineBase, which is a sizeof(MachInst) aligned address <=
      *  pc.instAddr() */
-    line.lineBaseAddr = response->request.getVaddr();
+    line.lineBaseAddr = response->request->getVaddr();
 
     if (response->fault != NoFault) {
         /* Stop fetching if there was a fault */
@@ -713,11 +718,11 @@ Fetch1::wakeupFetch(ThreadID tid)
 {
     ThreadContext *thread_ctx = cpu.getContext(tid);
     Fetch1ThreadInfo &thread = fetchInfo[tid];
-    thread.pc = thread_ctx->pcState();
+    set(thread.pc, thread_ctx->pcState());
+    thread.fetchAddr = thread.pc->instAddr();
     thread.state = FetchRunning;
     thread.wakeupGuard = true;
-    DPRINTF(Fetch, "[tid:%d]: Changing stream wakeup %s\n",
-            tid, thread_ctx->pcState());
+    DPRINTF(Fetch, "[tid:%d]: Changing stream wakeup %s\n", tid, *thread.pc);
 
     cpu.wakeupOnEvent(Pipeline::Fetch1StageId);
 }
@@ -770,7 +775,7 @@ Fetch1::minorTrace() const
     else
         (*out.inputWire).reportData(data);
 
-    MINORTRACE("state=%s icacheState=%s in_tlb_mem=%s/%s"
+    minor::minorTrace("state=%s icacheState=%s in_tlb_mem=%s/%s"
         " streamSeqNum=%d lines=%s\n", thread.state, icacheState,
         numFetchesInITLB, numFetchesInMemorySystem,
         thread.streamSeqNum, data.str());
@@ -778,4 +783,5 @@ Fetch1::minorTrace() const
     transfers.minorTrace();
 }
 
-}
+} // namespace minor
+} // namespace gem5

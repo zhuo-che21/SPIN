@@ -24,9 +24,9 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Tushar Krishna
  */
+
+#include "cpu/testers/garnet_synthetic_traffic/GarnetSyntheticTraffic.hh"
 
 #include <cmath>
 #include <iomanip>
@@ -34,12 +34,10 @@
 #include <string>
 #include <vector>
 
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/random.hh"
 #include "base/statistics.hh"
-#include "cpu/testers/garnet_synthetic_traffic/GarnetSyntheticTraffic.hh"
 #include "debug/GarnetSyntheticTraffic.hh"
-#include "mem/mem_object.hh"
 #include "mem/packet.hh"
 #include "mem/port.hh"
 #include "mem/request.hh"
@@ -47,7 +45,8 @@
 #include "sim/stats.hh"
 #include "sim/system.hh"
 
-using namespace std;
+namespace gem5
+{
 
 int TESTER_NETWORK=0;
 
@@ -73,25 +72,26 @@ GarnetSyntheticTraffic::sendPkt(PacketPtr pkt)
     numPacketsSent++;
 }
 
-GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params *p)
-    : MemObject(p),
-      tickEvent(this),
+GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params &p)
+    : ClockedObject(p),
+      tickEvent([this]{ tick(); }, "GarnetSyntheticTraffic tick",
+                false, Event::CPU_Tick_Pri),
       cachePort("GarnetSyntheticTraffic", this),
       retryPkt(NULL),
-      size(p->memory_size),
-      blockSizeBits(p->block_offset),
-      numDestinations(p->num_dest),
-      simCycles(p->sim_cycles),
-      numPacketsMax(p->num_packets_max),
+      size(p.memory_size),
+      blockSizeBits(p.block_offset),
+      numDestinations(p.num_dest),
+      simCycles(p.sim_cycles),
+      numPacketsMax(p.num_packets_max),
       numPacketsSent(0),
-      singleSender(p->single_sender),
-      singleDest(p->single_dest),
-      trafficType(p->traffic_type),
-      injRate(p->inj_rate),
-      injVnet(p->inj_vnet),
-      precision(p->precision),
-      responseLimit(p->response_limit),
-      masterId(p->system->getMasterId(name()))
+      singleSender(p.single_sender),
+      singleDest(p.single_dest),
+      trafficType(p.traffic_type),
+      injRate(p.inj_rate),
+      injVnet(p.inj_vnet),
+      precision(p.precision),
+      responseLimit(p.response_limit),
+      requestorId(p.system->getRequestorId(this))
 {
     // set up counters
     noResponseCycles = 0;
@@ -108,13 +108,13 @@ GarnetSyntheticTraffic::GarnetSyntheticTraffic(const Params *p)
             name(), id);
 }
 
-BaseMasterPort &
-GarnetSyntheticTraffic::getMasterPort(const std::string &if_name, PortID idx)
+Port &
+GarnetSyntheticTraffic::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name == "test")
         return cachePort;
     else
-        return MemObject::getMasterPort(if_name, idx);
+        return ClockedObject::getPort(if_name, idx);
 }
 
 void
@@ -127,16 +127,13 @@ GarnetSyntheticTraffic::init()
 void
 GarnetSyntheticTraffic::completeRequest(PacketPtr pkt)
 {
-    Request *req = pkt->req;
-
     DPRINTF(GarnetSyntheticTraffic,
             "Completed injection of %s packet for address %x\n",
             pkt->isWrite() ? "write" : "read\n",
-            req->getPaddr());
+            pkt->req->getPaddr());
 
     assert(pkt->isResponse());
     noResponseCycles = 0;
-    delete req;
     delete pkt;
 }
 
@@ -239,118 +236,7 @@ GarnetSyntheticTraffic::generatePkt()
         dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
         dest_y = src_y;
         destination = dest_y*radix + dest_x;
-    } else if (traffic == TORNADO_RANDOM_10) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 10) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_20) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 20) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_30) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 30) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_40) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 40) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_50) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 50) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_60) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 60) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_70) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 70) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_80) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 80) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == TORNADO_RANDOM_90) {
-        int rand = random_mt.random(0, 100);
-        if (rand < 90) {
-            // random
-            destination = random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // tornado
-            dest_x = (src_x + (int) ceil(radix/2) - 1) % radix;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
-    } else if (traffic == EDGE_50) {
-        int rand = random_mt.random(0,100); //generate a random number
-        if (rand < 50) {
-            // random
-            destination =  random_mt.random<unsigned>(0, num_destinations - 1);
-        } else {
-            // edge
-            dest_x = radix - 1;
-            dest_y = src_y;
-            destination = dest_y*radix + dest_x;
-        }
     }
-
     else {
         fatal("Unknown Traffic Type: %s!\n", traffic);
     }
@@ -388,7 +274,7 @@ GarnetSyntheticTraffic::generatePkt()
     //
     MemCmd::Command requestType;
 
-    Request *req = nullptr;
+    RequestPtr req = nullptr;
     Request::Flags flags;
 
     // Inject in specific Vnet
@@ -405,17 +291,20 @@ GarnetSyntheticTraffic::generatePkt()
     if (injReqType == 0) {
         // generate packet for virtual network 0
         requestType = MemCmd::ReadReq;
-        req = new Request(paddr, access_size, flags, masterId);
+        req = std::make_shared<Request>(paddr, access_size, flags,
+                                        requestorId);
     } else if (injReqType == 1) {
         // generate packet for virtual network 1
         requestType = MemCmd::ReadReq;
         flags.set(Request::INST_FETCH);
-        req = new Request(0, 0x0, access_size, flags, masterId, 0x0, 0);
+        req = std::make_shared<Request>(
+            0x0, access_size, flags, requestorId, 0x0, 0);
         req->setPaddr(paddr);
     } else {  // if (injReqType == 2)
         // generate packet for virtual network 2
         requestType = MemCmd::WriteReq;
-        req = new Request(paddr, access_size, flags, masterId);
+        req = std::make_shared<Request>(paddr, access_size, flags,
+                                        requestorId);
     }
 
     req->setContext(id);
@@ -445,16 +334,6 @@ GarnetSyntheticTraffic::initTrafficType()
     trafficStringToEnum["tornado"] = TORNADO_;
     trafficStringToEnum["transpose"] = TRANSPOSE_;
     trafficStringToEnum["uniform_random"] = UNIFORM_RANDOM_;
-    trafficStringToEnum["tornado_random_10"] = TORNADO_RANDOM_10;
-    trafficStringToEnum["tornado_random_20"] = TORNADO_RANDOM_20;
-    trafficStringToEnum["tornado_random_30"] = TORNADO_RANDOM_30;
-    trafficStringToEnum["tornado_random_40"] = TORNADO_RANDOM_40;
-    trafficStringToEnum["tornado_random_50"] = TORNADO_RANDOM_50;
-    trafficStringToEnum["tornado_random_60"] = TORNADO_RANDOM_60;
-    trafficStringToEnum["tornado_random_70"] = TORNADO_RANDOM_70;
-    trafficStringToEnum["tornado_random_80"] = TORNADO_RANDOM_80;
-    trafficStringToEnum["tornado_random_90"] = TORNADO_RANDOM_90;
-    trafficStringToEnum["edge_50"] = EDGE_50;
 }
 
 void
@@ -471,9 +350,4 @@ GarnetSyntheticTraffic::printAddr(Addr a)
     cachePort.printAddr(a);
 }
 
-
-GarnetSyntheticTraffic *
-GarnetSyntheticTrafficParams::create()
-{
-    return new GarnetSyntheticTraffic(this);
-}
+} // namespace gem5

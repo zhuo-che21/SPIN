@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 #include "dev/net/etherpkt.hh"
@@ -33,29 +31,44 @@
 #include <iostream>
 
 #include "base/inet.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "sim/serialize.hh"
 
-using namespace std;
+namespace gem5
+{
 
 void
-EthPacketData::serialize(const string &base, CheckpointOut &cp) const
+EthPacketData::serialize(const std::string &base, CheckpointOut &cp) const
 {
     paramOut(cp, base + ".simLength", simLength);
+    paramOut(cp, base + ".bufLength", bufLength);
     paramOut(cp, base + ".length", length);
     arrayParamOut(cp, base + ".data", data, length);
 }
 
 void
-EthPacketData::unserialize(const string &base, CheckpointIn &cp)
+EthPacketData::unserialize(const std::string &base, CheckpointIn &cp)
 {
     paramIn(cp, base + ".length", length);
-    if (length) {
-        assert(data == nullptr);
-        data = new uint8_t[length];
-        arrayParamIn(cp, base + ".data", data, length);
+    unsigned chkpt_buf_length;
+    if (optParamIn(cp, base + ".bufLength", chkpt_buf_length)) {
+        // If bufLength is in the checkpoint, make sure that the current buffer
+        // is unallocated or that the checkpoint requested size is smaller than
+        // the current buffer.
+        assert(!data || chkpt_buf_length <= bufLength);
+        bufLength = chkpt_buf_length;
+    } else {
+        // If bufLength is not in the checkpoint, try to use the existing
+        // buffer or use length to size the buffer
+        if (!data)
+            bufLength = length;
     }
+    assert(length <= bufLength);
+    if (!data)
+        data = new uint8_t[bufLength];
+    arrayParamIn(cp, base + ".data", data, length);
     if (!optParamIn(cp, base + ".simLength", simLength))
         simLength = length;
 }
 
+} // namespace gem5

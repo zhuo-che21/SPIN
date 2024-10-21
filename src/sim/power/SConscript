@@ -25,20 +25,21 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: David Guillen Fandos
 
 Import('*')
 
-SimObject('MathExprPowerModel.py')
-SimObject('PowerModel.py')
-SimObject('PowerModelState.py')
-SimObject('ThermalDomain.py')
-SimObject('ThermalModel.py')
+SimObject('MathExprPowerModel.py', sim_objects=['MathExprPowerModel'])
+SimObject('PowerModel.py', sim_objects=['PowerModel'], enums=['PMType'])
+SimObject('PowerModelState.py', sim_objects=['PowerModelState'])
+SimObject('ThermalDomain.py', sim_objects=['ThermalDomain'])
+SimObject('ThermalModel.py', sim_objects=[
+    'ThermalNode', 'ThermalResistor', 'ThermalCapacitor',
+    'ThermalReference', 'ThermalModel'])
 
 Source('power_model.cc')
 Source('mathexpr_powermodel.cc')
 Source('thermal_domain.cc')
 Source('thermal_model.cc')
+Source('thermal_node.cc')
 
 DebugFlag('ThermalDomain')

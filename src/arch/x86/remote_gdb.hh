@@ -35,9 +35,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Gabe Black
- *          Boris Shingarov
  */
 
 #ifndef __ARCH_X86_REMOTEGDB_HH__
@@ -46,7 +43,11 @@
 #include <algorithm>
 
 #include "arch/x86/types.hh"
+#include "base/compiler.hh"
 #include "base/remote_gdb.hh"
+
+namespace gem5
+{
 
 class System;
 class ThreadContext;
@@ -57,12 +58,13 @@ class RemoteGDB : public BaseRemoteGDB
 {
   protected:
     bool acc(Addr addr, size_t len);
-    bool checkBpLen(size_t len) { return len == 1; }
+    bool checkBpKind(size_t kind) { return kind == 1; }
     class X86GdbRegCache : public BaseGdbRegCache
     {
       using BaseGdbRegCache::BaseGdbRegCache;
       private:
-        struct {
+        struct
+        {
           uint32_t eax;
           uint32_t ecx;
           uint32_t edx;
@@ -85,14 +87,19 @@ class RemoteGDB : public BaseRemoteGDB
         size_t size() const { return sizeof(r); }
         void getRegs(ThreadContext*);
         void setRegs(ThreadContext*) const;
-        const std::string name() const { return gdb->name() + ".X86GdbRegCache"; }
+        const std::string
+        name() const
+        {
+            return gdb->name() + ".X86GdbRegCache";
+        }
     };
 
     class AMD64GdbRegCache : public BaseGdbRegCache
     {
       using BaseGdbRegCache::BaseGdbRegCache;
       private:
-        struct {
+        struct GEM5_PACKED
+        {
           uint64_t rax;
           uint64_t rbx;
           uint64_t rcx;
@@ -128,13 +135,22 @@ class RemoteGDB : public BaseRemoteGDB
         size_t size() const { return sizeof(r); }
         void getRegs(ThreadContext*);
         void setRegs(ThreadContext*) const;
-        const std::string name() const { return gdb->name() + ".AMD64GdbRegCache"; }
+        const std::string
+        name() const
+        {
+            return gdb->name() + ".AMD64GdbRegCache";
+        }
     };
 
+    X86GdbRegCache regCache32;
+    AMD64GdbRegCache regCache64;
+
   public:
-    RemoteGDB(System *system, ThreadContext *context);
+    RemoteGDB(System *system, ListenSocketConfig _listen_config);
     BaseGdbRegCache *gdbRegs();
 };
+
 } // namespace X86ISA
+} // namespace gem5
 
 #endif // __ARCH_X86_REMOTEGDB_HH__

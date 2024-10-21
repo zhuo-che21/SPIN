@@ -38,8 +38,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 #ifndef __SIM_SIM_EVENTS_HH__
@@ -47,6 +45,9 @@
 
 #include "sim/global_event.hh"
 #include "sim/serialize.hh"
+
+namespace gem5
+{
 
 //
 // Event to terminate simulation at a particular cycle/instruction
@@ -60,16 +61,18 @@ class GlobalSimLoopExitEvent : public GlobalEvent
     Tick repeat;
 
   public:
-    // non-scheduling version for createForUnserialize()
-    GlobalSimLoopExitEvent();
     GlobalSimLoopExitEvent(Tick when, const std::string &_cause, int c,
                            Tick repeat = 0);
+    GlobalSimLoopExitEvent(const std::string &_cause, int c, Tick repeat = 0);
 
     const std::string getCause() const { return cause; }
     int getCode() const { return code; }
 
-    void process();     // process event
-
+    virtual void process();// process event
+    virtual void clean(){};//cleaning event
+    ~GlobalSimLoopExitEvent (){
+      DPRINTF(Event,"GlobalSimLoopExitEvent destructed\n");
+    };
     virtual const char *description() const;
 };
 
@@ -94,24 +97,6 @@ class LocalSimLoopExitEvent : public Event
 
     void serialize(CheckpointOut &cp) const override;
     void unserialize(CheckpointIn &cp) override;
-    static Serializable *createForUnserialize(CheckpointIn &cp,
-                                              const std::string &section);
-};
-
-class CountedDrainEvent : public Event
-{
-  private:
-    // Count of how many objects have not yet drained
-    int count;
-
-  public:
-    CountedDrainEvent();
-
-    void process() override;
-
-    void setCount(int _count) { count = _count; }
-
-    int getCount() const { return count; }
 };
 
 //
@@ -133,5 +118,6 @@ class CountedExitEvent : public Event
     const char *description() const override;
 };
 
+} // namespace gem5
 
 #endif  // __SIM_SIM_EVENTS_HH__

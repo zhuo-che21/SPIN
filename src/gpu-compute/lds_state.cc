@@ -2,8 +2,6 @@
  * Copyright (c) 2014-2015 Advanced Micro Devices, Inc.
  * All rights reserved.
  *
- * For use for simulation and test purposes only
- *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *
@@ -14,9 +12,9 @@
  * this list of conditions and the following disclaimer in the documentation
  * and/or other materials provided with the distribution.
  *
- * 3. Neither the name of the copyright holder nor the names of its contributors
- * may be used to endorse or promote products derived from this software
- * without specific prior written permission.
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from this
+ * software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -29,8 +27,6 @@
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * Author: John Kalamatianos, Joe Gross
  */
 
 #include "gpu-compute/lds_state.hh"
@@ -43,35 +39,29 @@
 #include "gpu-compute/gpu_dyn_inst.hh"
 #include "gpu-compute/shader.hh"
 
+namespace gem5
+{
+
 /**
  * the default constructor that works with SWIG
  */
-LdsState::LdsState(const Params *params) :
-    MemObject(params),
+LdsState::LdsState(const Params &params) :
+    ClockedObject(params),
     tickEvent(this),
     cuPort(name() + ".port", this),
-    maximumSize(params->size),
-    range(params->range),
-    bankConflictPenalty(params->bankConflictPenalty),
-    banks(params->banks)
+    maximumSize(params.size),
+    range(params.range),
+    bankConflictPenalty(params.bankConflictPenalty),
+    banks(params.banks)
 {
-    fatal_if(params->banks <= 0,
+    fatal_if(params.banks <= 0,
              "Number of LDS banks should be positive number");
-    fatal_if((params->banks & (params->banks - 1)) != 0,
+    fatal_if((params.banks & (params.banks - 1)) != 0,
              "Number of LDS banks should be a power of 2");
-    fatal_if(params->size <= 0,
+    fatal_if(params.size <= 0,
              "cannot allocate an LDS with a size less than 1");
-    fatal_if(params->size % 2,
+    fatal_if(params.size % 2,
           "the LDS should be an even number");
-}
-
-/**
- * Needed by the SWIG compiler
- */
-LdsState *
-LdsStateParams::create()
-{
-    return new LdsState(this);
 }
 
 /**
@@ -200,10 +190,10 @@ LdsState::processPacket(PacketPtr packet)
     // the number of conflicts this packet will have when accessing the LDS
     unsigned bankConflicts = countBankConflicts(packet, &bankAccesses);
     // count the total number of physical LDS bank accessed
-    parent->ldsBankAccesses += bankAccesses;
+    parent->stats.ldsBankAccesses += bankAccesses;
     // count the LDS bank conflicts. A number set to 1 indicates one
     // access per bank maximum so there are no bank conflicts
-    parent->ldsBankConflictDist.sample(bankConflicts-1);
+    parent->stats.ldsBankConflictDist.sample(bankConflicts-1);
 
     GPUDynInstPtr dynInst = getDynInstr(packet);
     // account for the LDS bank conflict overhead
@@ -212,8 +202,8 @@ LdsState::processPacket(PacketPtr packet)
         parent->loadBusLength();
     // delay for accessing the LDS
     Tick processingTime =
-        parent->shader->ticks(bankConflicts * bankConflictPenalty) +
-        parent->shader->ticks(busLength);
+        parent->cyclesToTicks(Cycles(bankConflicts * bankConflictPenalty)) +
+        parent->cyclesToTicks(Cycles(busLength));
     // choose (delay + last packet in queue) or (now + delay) as the time to
     // return this
     Tick doneAt = earliestReturnTime() + processingTime;
@@ -330,3 +320,5 @@ LdsState::TickEvent::process()
 {
     ldsState->process();
 }
+
+} // namespace gem5

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 ARM Limited
+ * Copyright (c) 2012-2019, 2021 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -37,11 +37,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Ron Dreslinski
- *          Steve Reinhardt
- *          Ali Saidi
- *          Andreas Hansson
  */
 
 /**
@@ -54,21 +49,29 @@
 
 #include <bitset>
 #include <cassert>
+#include <initializer_list>
 #include <list>
 
+#include "base/addr_range.hh"
 #include "base/cast.hh"
 #include "base/compiler.hh"
+#include "base/extensible.hh"
 #include "base/flags.hh"
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/printable.hh"
 #include "base/types.hh"
+#include "mem/htm.hh"
 #include "mem/request.hh"
-#include "sim/core.hh"
+#include "sim/byteswap.hh"
+
+namespace gem5
+{
 
 class Packet;
 typedef Packet *PacketPtr;
 typedef uint8_t* PacketDataPtr;
 typedef std::list<PacketPtr> PacketList;
+typedef uint64_t PacketId;
 
 class MemCmd
 {
@@ -86,10 +89,13 @@ class MemCmd
         ReadRespWithInvalidate,
         WriteReq,
         WriteResp,
+        WriteCompleteResp,
         WritebackDirty,
         WritebackClean,
+        WriteClean,            // writes dirty data below without evicting
         CleanEvict,
         SoftPFReq,
+        SoftPFExReq,
         HardPFReq,
         SoftPFResp,
         HardPFResp,
@@ -107,18 +113,29 @@ class MemCmd
         StoreCondReq,
         StoreCondFailReq,       // Failed StoreCondReq in MSHR (never sent)
         StoreCondResp,
+        LockedRMWReadReq,
+        LockedRMWReadResp,
+        LockedRMWWriteReq,
+        LockedRMWWriteResp,
         SwapReq,
         SwapResp,
-        MessageReq,
-        MessageResp,
-        MemFenceReq,
+        // MessageReq and MessageResp are deprecated.
+        MemFenceReq = SwapResp + 3,
+        MemSyncReq,  // memory synchronization request (e.g., cache invalidate)
+        MemSyncResp, // memory synchronization response
         MemFenceResp,
+        CleanSharedReq,
+        CleanSharedResp,
+        CleanInvalidReq,
+        CleanInvalidResp,
         // Error responses
         // @TODO these should be classified as responses rather than
         // requests; coding them as requests initially for backwards
         // compatibility
         InvalidDestError,  // packet dest field invalid
         BadAddressError,   // memory address invalid
+        ReadError,         // packet dest unable to fulfill read command
+        WriteError,        // packet dest unable to fulfill write command
         FunctionalReadError, // unable to fulfill functional read
         FunctionalWriteError, // unable to fulfill functional write
         // Fake simulator-only commands
@@ -126,6 +143,12 @@ class MemCmd
         FlushReq,      //request for a cache flush
         InvalidateReq,   // request for address to be invalidated
         InvalidateResp,
+        // hardware transactional memory
+        HTMReq,
+        HTMReqResp,
+        HTMAbort,
+        // Tlb shootdown
+        TlbiExtSync,
         NUM_MEM_CMDS
     };
 
@@ -139,6 +162,7 @@ class MemCmd
         IsWrite,        //!< Data flows from requester to responder
         IsUpgrade,
         IsInvalidate,
+        IsClean,        //!< Cleans any existing dirty blocks
         NeedsWritable,  //!< Requires writable copy to complete in-cache
         IsRequest,      //!< Issued by requester
         IsResponse,     //!< Issue by responder
@@ -147,6 +171,7 @@ class MemCmd
         IsSWPrefetch,
         IsHWPrefetch,
         IsLlsc,         //!< Alpha/MIPS LL or SC access
+        IsLockedRMW,    //!< x86 locked RMW access
         HasData,        //!< There is an associated payload
         IsError,        //!< Error response
         IsPrint,        //!< Print state matching address (for debugging)
@@ -154,6 +179,15 @@ class MemCmd
         FromCache,      //!< Request originated from a caching agent
         NUM_COMMAND_ATTRIBUTES
     };
+
+    static constexpr unsigned long long
+    buildAttributes(std::initializer_list<Attribute> attrs)
+    {
+        unsigned long long ret = 0;
+        for (const auto &attr: attrs)
+            ret |= (1ULL << attr);
+        return ret;
+    }
 
     /**
      * Structure that defines attributes and other data associated
@@ -168,6 +202,11 @@ class MemCmd
         const Command response;
         /// String representation (for printing)
         const std::string str;
+
+        CommandInfo(std::initializer_list<Attribute> attrs,
+                Command _response, const std::string &_str) :
+            attributes(buildAttributes(attrs)), response(_response), str(_str)
+        {}
     };
 
     /// Array to map Command enum to associated info.
@@ -194,6 +233,7 @@ class MemCmd
     bool needsResponse() const     { return testCmdAttrib(NeedsResponse); }
     bool isInvalidate() const      { return testCmdAttrib(IsInvalidate); }
     bool isEviction() const        { return testCmdAttrib(IsEviction); }
+    bool isClean() const           { return testCmdAttrib(IsClean); }
     bool fromCache() const         { return testCmdAttrib(FromCache); }
 
     /**
@@ -209,6 +249,7 @@ class MemCmd
      */
     bool hasData() const        { return testCmdAttrib(HasData); }
     bool isLLSC() const         { return testCmdAttrib(IsLlsc); }
+    bool isLockedRMW() const    { return testCmdAttrib(IsLockedRMW); }
     bool isSWPrefetch() const   { return testCmdAttrib(IsSWPrefetch); }
     bool isHWPrefetch() const   { return testCmdAttrib(IsHWPrefetch); }
     bool isPrefetch() const     { return testCmdAttrib(IsSWPrefetch) ||
@@ -216,6 +257,14 @@ class MemCmd
     bool isError() const        { return testCmdAttrib(IsError); }
     bool isPrint() const        { return testCmdAttrib(IsPrint); }
     bool isFlush() const        { return testCmdAttrib(IsFlush); }
+
+    bool
+    isDemand() const
+    {
+        return (cmd == ReadReq || cmd == WriteReq ||
+                cmd == WriteLineReq || cmd == ReadExReq ||
+                cmd == ReadCleanReq || cmd == ReadSharedReq);
+    }
 
     Command
     responseCommand() const
@@ -238,21 +287,24 @@ class MemCmd
 /**
  * A Packet is used to encapsulate a transfer between two objects in
  * the memory system (e.g., the L1 and L2 cache).  (In contrast, a
- * single Request travels all the way from the requester to the
+ * single Request travels all the way from the requestor to the
  * ultimate destination and back, possibly being conveyed by several
  * different Packets along the way.)
  */
-class Packet : public Printable
+class Packet : public Printable, public Extensible<Packet>
 {
   public:
     typedef uint32_t FlagsType;
-    typedef ::Flags<FlagsType> Flags;
+    typedef gem5::Flags<FlagsType> Flags;
 
   private:
-
-    enum : FlagsType {
+    enum : FlagsType
+    {
         // Flags to transfer across when copying a packet
-        COPY_FLAGS             = 0x0000000F,
+        COPY_FLAGS             = 0x000000FF,
+
+        // Flags that are used to create reponse packets
+        RESPONDER_FLAGS        = 0x00000009,
 
         // Does this packet have sharers (which means it should not be
         // considered writable) or not. See setHasSharers below.
@@ -270,6 +322,25 @@ class Packet : public Printable
         // Snoop co-ordination flag to indicate that a cache is
         // responding to a snoop. See setCacheResponding below.
         CACHE_RESPONDING       = 0x00000008,
+
+        // The writeback/writeclean should be propagated further
+        // downstream by the receiver
+        WRITE_THROUGH          = 0x00000010,
+
+        // Response co-ordination flag for cache maintenance
+        // operations
+        SATISFIED              = 0x00000020,
+
+        // hardware transactional memory
+
+        // Indicates that this packet/request has returned from the
+        // cache hierarchy in a failed transaction. The core is
+        // notified like this.
+        FAILS_TRANSACTION      = 0x00000040,
+
+        // Indicates that this packet/request originates in the CPU executing
+        // in transactional mode, i.e. in a transaction.
+        FROM_TRANSACTION       = 0x00000080,
 
         /// Are the 'addr' and 'size' fields valid?
         VALID_ADDR             = 0x00000100,
@@ -300,15 +371,17 @@ class Packet : public Printable
     /// The command field of the packet.
     MemCmd cmd;
 
+    const PacketId id;
+
     /// A pointer to the original request.
-    const RequestPtr req;
+    RequestPtr req;
 
   private:
    /**
-    * A pointer to the data being transfered.  It can be differnt
-    * sizes at each level of the heirarchy so it belongs in the
+    * A pointer to the data being transferred. It can be different
+    * sizes at each level of the hierarchy so it belongs to the
     * packet, not request. This may or may not be populated when a
-    * responder recieves the packet. If not populated it memory should
+    * responder receives the packet. If not populated memory should
     * be allocated.
     */
     PacketDataPtr data;
@@ -327,6 +400,24 @@ class Packet : public Printable
      * Track the bytes found that satisfy a functional read.
      */
     std::vector<bool> bytesValid;
+
+    // Quality of Service priority value
+    uint8_t _qosValue;
+
+    // hardware transactional memory
+
+    /**
+     * Holds the return status of the transaction.
+     * The default case will be NO_FAIL, otherwise this will specify the
+     * reason for the transaction's failure in the memory subsystem.
+     */
+    HtmCacheFailure htmReturnReason;
+
+    /**
+     * A global unique identifier of the transaction.
+     * This is used for correctness/debugging only.
+     */
+    uint64_t htmTransactionUid;
 
   public:
 
@@ -359,16 +450,16 @@ class Packet : public Printable
 
     /**
      * A virtual base opaque structure used to hold state associated
-     * with the packet (e.g., an MSHR), specific to a MemObject that
+     * with the packet (e.g., an MSHR), specific to a SimObject that
      * sees the packet. A pointer to this state is returned in the
-     * packet's response so that the MemObject in question can quickly
+     * packet's response so that the SimObject in question can quickly
      * look up the state needed to process it. A specific subclass
      * would be derived from this to carry state specific to a
      * particular sending device.
      *
-     * As multiple MemObjects may add their SenderState throughout the
+     * As multiple SimObjects may add their SenderState throughout the
      * memory system, the SenderStates create a stack, where a
-     * MemObject can add a new Senderstate, as long as the
+     * SimObject can add a new Senderstate, as long as the
      * predecessing SenderState is restored when the response comes
      * back. For this reason, the predecessor should always be
      * populated with the current SenderState of a packet before
@@ -501,6 +592,7 @@ class Packet : public Printable
 
     bool isRead() const              { return cmd.isRead(); }
     bool isWrite() const             { return cmd.isWrite(); }
+    bool isDemand() const            { return cmd.isDemand(); }
     bool isUpgrade()  const          { return cmd.isUpgrade(); }
     bool isRequest() const           { return cmd.isRequest(); }
     bool isResponse() const          { return cmd.isResponse(); }
@@ -516,6 +608,7 @@ class Packet : public Printable
     bool needsResponse() const       { return cmd.needsResponse(); }
     bool isInvalidate() const        { return cmd.isInvalidate(); }
     bool isEviction() const          { return cmd.isEviction(); }
+    bool isClean() const             { return cmd.isClean(); }
     bool fromCache() const           { return cmd.fromCache(); }
     bool isWriteback() const         { return cmd.isWriteback(); }
     bool hasData() const             { return cmd.hasData(); }
@@ -525,9 +618,17 @@ class Packet : public Printable
         return resp_cmd.hasData();
     }
     bool isLLSC() const              { return cmd.isLLSC(); }
+    bool isLockedRMW() const         { return cmd.isLockedRMW(); }
     bool isError() const             { return cmd.isError(); }
     bool isPrint() const             { return cmd.isPrint(); }
     bool isFlush() const             { return cmd.isFlush(); }
+
+    bool isWholeLineWrite(unsigned blk_size)
+    {
+        return (cmd == MemCmd::WriteReq || cmd == MemCmd::WriteLineReq) &&
+            getOffset(blk_size) == 0 && getSize() == blk_size &&
+            !isMaskedWrite();
+    }
 
     //@{
     /// Snoop flags
@@ -612,16 +713,71 @@ class Packet : public Printable
     void setResponderHadWritable()
     {
         assert(cacheResponding());
+        assert(!responderHadWritable());
         flags.set(RESPONDER_HAD_WRITABLE);
     }
     bool responderHadWritable() const
     { return flags.isSet(RESPONDER_HAD_WRITABLE); }
+
+    /**
+     * Copy the reponse flags from an input packet to this packet. The
+     * reponse flags determine whether a responder has been found and
+     * the state at which the block will be at the destination.
+     *
+     * @pkt The packet that we will copy flags from
+     */
+    void copyResponderFlags(const PacketPtr pkt);
+
+    /**
+     * A writeback/writeclean cmd gets propagated further downstream
+     * by the receiver when the flag is set.
+     */
+    void setWriteThrough()
+    {
+        assert(cmd.isWrite() &&
+               (cmd.isEviction() || cmd == MemCmd::WriteClean));
+        flags.set(WRITE_THROUGH);
+    }
+    void clearWriteThrough() { flags.clear(WRITE_THROUGH); }
+    bool writeThrough() const { return flags.isSet(WRITE_THROUGH); }
+
+    /**
+     * Set when a request hits in a cache and the cache is not going
+     * to respond. This is used by the crossbar to coordinate
+     * responses for cache maintenance operations.
+     */
+    void setSatisfied()
+    {
+        assert(cmd.isClean());
+        assert(!flags.isSet(SATISFIED));
+        flags.set(SATISFIED);
+    }
+    bool satisfied() const { return flags.isSet(SATISFIED); }
 
     void setSuppressFuncError()     { flags.set(SUPPRESS_FUNC_ERROR); }
     bool suppressFuncError() const  { return flags.isSet(SUPPRESS_FUNC_ERROR); }
     void setBlockCached()          { flags.set(BLOCK_CACHED); }
     bool isBlockCached() const     { return flags.isSet(BLOCK_CACHED); }
     void clearBlockCached()        { flags.clear(BLOCK_CACHED); }
+
+    /**
+     * QoS Value getter
+     * Returns 0 if QoS value was never set (constructor default).
+     *
+     * @return QoS priority value of the packet
+     */
+    inline uint8_t qosValue() const { return _qosValue; }
+
+    /**
+     * QoS Value setter
+     * Interface for setting QoS priority value of the packet.
+     *
+     * @param qos_value QoS priority value
+     */
+    inline void qosValue(const uint8_t qos_value)
+    { _qosValue = qos_value; }
+
+    inline RequestorID requestorId() const { return req->requestorId(); }
 
     // Network error conditions... encapsulate them as methods since
     // their encoding keeps changing (from result field to command
@@ -631,6 +787,19 @@ class Packet : public Printable
     {
         assert(isResponse());
         cmd = MemCmd::BadAddressError;
+    }
+
+    // Command error conditions. The request is sent to target but the target
+    // cannot make it.
+    void
+    setBadCommand()
+    {
+        assert(isResponse());
+        if (isWrite()) {
+            cmd = MemCmd::WriteError;
+        } else {
+            cmd = MemCmd::ReadError;
+        }
     }
 
     void copyError(Packet *pkt) { assert(pkt->isError()); cmd = pkt->cmd; }
@@ -646,6 +815,13 @@ class Packet : public Printable
     void setAddr(Addr _addr) { assert(flags.isSet(VALID_ADDR)); addr = _addr; }
 
     unsigned getSize() const  { assert(flags.isSet(VALID_SIZE)); return size; }
+
+    /**
+     * Get address range to which this packet belongs.
+     *
+     * @return Address range of this packet.
+     */
+    AddrRange getAddrRange() const;
 
     Addr getOffset(unsigned int blk_size) const
     {
@@ -698,15 +874,35 @@ class Packet : public Printable
      * first, but the Requests's physical address and size fields need
      * not be valid. The command must be supplied.
      */
-    Packet(const RequestPtr _req, MemCmd _cmd)
-        :  cmd(_cmd), req(_req), data(nullptr), addr(0), _isSecure(false),
-           size(0), headerDelay(0), snoopDelay(0), payloadDelay(0),
-           senderState(NULL)
+    Packet(const RequestPtr &_req, MemCmd _cmd)
+        :  cmd(_cmd), id((PacketId)_req.get()), req(_req),
+           data(nullptr), addr(0), _isSecure(false), size(0),
+           _qosValue(0),
+           htmReturnReason(HtmCacheFailure::NO_FAIL),
+           htmTransactionUid(0),
+           headerDelay(0), snoopDelay(0),
+           payloadDelay(0), senderState(NULL)
     {
+        flags.clear();
         if (req->hasPaddr()) {
             addr = req->getPaddr();
             flags.set(VALID_ADDR);
             _isSecure = req->isSecure();
+        }
+
+        /**
+         * hardware transactional memory
+         *
+         * This is a bit of a hack!
+         * Technically the address of a HTM command is set to zero
+         * but is not valid. The reason that we pretend it's valid is
+         * to void the getAddr() function from failing. It would be
+         * cumbersome to add control flow in many places to check if the
+         * packet represents a HTM command before calling getAddr().
+         */
+        if (req->isHTMCmd()) {
+            flags.set(VALID_ADDR);
+            assert(addr == 0x0);
         }
         if (req->hasSize()) {
             size = req->getSize();
@@ -719,11 +915,16 @@ class Packet : public Printable
      * a request that is for a whole block, not the address from the
      * req.  this allows for overriding the size/addr of the req.
      */
-    Packet(const RequestPtr _req, MemCmd _cmd, int _blkSize)
-        :  cmd(_cmd), req(_req), data(nullptr), addr(0), _isSecure(false),
-           headerDelay(0), snoopDelay(0), payloadDelay(0),
-           senderState(NULL)
+    Packet(const RequestPtr &_req, MemCmd _cmd, int _blkSize, PacketId _id = 0)
+        :  cmd(_cmd), id(_id ? _id : (PacketId)_req.get()), req(_req),
+           data(nullptr), addr(0), _isSecure(false),
+           _qosValue(0),
+           htmReturnReason(HtmCacheFailure::NO_FAIL),
+           htmTransactionUid(0),
+           headerDelay(0),
+           snoopDelay(0), payloadDelay(0), senderState(NULL)
     {
+        flags.clear();
         if (req->hasPaddr()) {
             addr = req->getPaddr() & ~(_blkSize - 1);
             flags.set(VALID_ADDR);
@@ -741,10 +942,14 @@ class Packet : public Printable
      * packet should allocate its own data.
      */
     Packet(const PacketPtr pkt, bool clear_flags, bool alloc_data)
-        :  cmd(pkt->cmd), req(pkt->req),
+        :  Extensible<Packet>(*pkt),
+           cmd(pkt->cmd), id(pkt->id), req(pkt->req),
            data(nullptr),
            addr(pkt->addr), _isSecure(pkt->_isSecure), size(pkt->size),
            bytesValid(pkt->bytesValid),
+           _qosValue(pkt->qosValue()),
+           htmReturnReason(HtmCacheFailure::NO_FAIL),
+           htmTransactionUid(0),
            headerDelay(pkt->headerDelay),
            snoopDelay(0),
            payloadDelay(pkt->payloadDelay),
@@ -754,6 +959,15 @@ class Packet : public Printable
             flags.set(pkt->flags & COPY_FLAGS);
 
         flags.set(pkt->flags & (VALID_ADDR|VALID_SIZE));
+
+        if (pkt->isHtmTransactional())
+            setHtmTransactional(pkt->getHtmTransactionUid());
+
+        if (pkt->htmTransactionFailedInCache()) {
+            setHtmTransactionFailedInCache(
+                pkt->getHtmTransactionFailedInCacheRC()
+            );
+        }
 
         // should we allocate space for data, or not, the express
         // snoops do not need to carry any data as they only serve to
@@ -776,12 +990,21 @@ class Packet : public Printable
      * Generate the appropriate read MemCmd based on the Request flags.
      */
     static MemCmd
-    makeReadCmd(const RequestPtr req)
+    makeReadCmd(const RequestPtr &req)
     {
-        if (req->isLLSC())
+        if (req->isHTMCmd()) {
+            if (req->isHTMAbort())
+                return MemCmd::HTMAbort;
+            else
+                return MemCmd::HTMReq;
+        } else if (req->isLLSC())
             return MemCmd::LoadLockedReq;
+        else if (req->isPrefetchEx())
+            return MemCmd::SoftPFExReq;
         else if (req->isPrefetch())
             return MemCmd::SoftPFReq;
+        else if (req->isLockedRMW())
+            return MemCmd::LockedRMWReadReq;
         else
             return MemCmd::ReadReq;
     }
@@ -790,13 +1013,20 @@ class Packet : public Printable
      * Generate the appropriate write MemCmd based on the Request flags.
      */
     static MemCmd
-    makeWriteCmd(const RequestPtr req)
+    makeWriteCmd(const RequestPtr &req)
     {
         if (req->isLLSC())
             return MemCmd::StoreCondReq;
-        else if (req->isSwap())
+        else if (req->isSwap() || req->isAtomic())
             return MemCmd::SwapReq;
-        else
+        else if (req->isCacheInvalidate()) {
+          return req->isCacheClean() ? MemCmd::CleanInvalidReq :
+              MemCmd::InvalidateReq;
+        } else if (req->isCacheClean()) {
+            return MemCmd::CleanSharedReq;
+        } else if (req->isLockedRMW()) {
+            return MemCmd::LockedRMWWriteReq;
+        } else
             return MemCmd::WriteReq;
     }
 
@@ -805,13 +1035,13 @@ class Packet : public Printable
      * Fine-tune the MemCmd type if it's not a vanilla read or write.
      */
     static PacketPtr
-    createRead(const RequestPtr req)
+    createRead(const RequestPtr &req)
     {
         return new Packet(req, makeReadCmd(req));
     }
 
     static PacketPtr
-    createWrite(const RequestPtr req)
+    createWrite(const RequestPtr &req)
     {
         return new Packet(req, makeWriteCmd(req));
     }
@@ -821,18 +1051,6 @@ class Packet : public Printable
      */
     ~Packet()
     {
-        // Delete the request object if this is a request packet which
-        // does not need a response, because the requester will not get
-        // a chance. If the request packet needs a response then the
-        // request will be deleted on receipt of the response
-        // packet. We also make sure to never delete the request for
-        // express snoops, even for cases when responses are not
-        // needed (CleanEvict and Writeback), since the snoop packet
-        // re-uses the same request.
-        if (req && isRequest() && !needsResponse() &&
-            !isExpressSnoop()) {
-            delete req;
-        }
         deleteData();
     }
 
@@ -885,6 +1103,55 @@ class Packet : public Printable
         flags.set(VALID_SIZE);
     }
 
+    /**
+     * Accessor functions for the cache bypass flags. The cache bypass
+     * can specify which levels in the hierarchy to bypass. If GLC_BIT
+     * is set, the requests are globally coherent and bypass TCP.
+     * If SLC_BIT is set, then the requests are system level coherent
+     * and bypass both TCP and TCC.
+     */
+    bool isGLCSet() const { return req->isGLCSet();}
+    bool isSLCSet() const { return req->isSLCSet();}
+
+    /**
+     * Check if packet corresponds to a given block-aligned address and
+     * address space.
+     *
+     * @param addr The address to compare against.
+     * @param is_secure Whether addr belongs to the secure address space.
+     * @param blk_size Block size in bytes.
+     * @return Whether packet matches description.
+     */
+    bool matchBlockAddr(const Addr addr, const bool is_secure,
+                        const int blk_size) const;
+
+    /**
+     * Check if this packet refers to the same block-aligned address and
+     * address space as another packet.
+     *
+     * @param pkt The packet to compare against.
+     * @param blk_size Block size in bytes.
+     * @return Whether packet matches description.
+     */
+    bool matchBlockAddr(const PacketPtr pkt, const int blk_size) const;
+
+    /**
+     * Check if packet corresponds to a given address and address space.
+     *
+     * @param addr The address to compare against.
+     * @param is_secure Whether addr belongs to the secure address space.
+     * @return Whether packet matches description.
+     */
+    bool matchAddr(const Addr addr, const bool is_secure) const;
+
+    /**
+     * Check if this packet refers to the same address and address space as
+     * another packet.
+     *
+     * @param pkt The packet to compare against.
+     * @return Whether packet matches description.
+     */
+    bool matchAddr(const PacketPtr pkt) const;
 
   public:
     /**
@@ -958,6 +1225,7 @@ class Packet : public Printable
     getPtr()
     {
         assert(flags.isSet(STATIC_DATA|DYNAMIC_DATA));
+        assert(!isMaskedWrite());
         return (T*)data;
     }
 
@@ -990,13 +1258,6 @@ class Packet : public Printable
     template <typename T>
     T get(ByteOrder endian) const;
 
-    /**
-     * Get the data in the packet byte swapped from guest to host
-     * endian.
-     */
-    template <typename T>
-    T get() const;
-
     /** Set the value in the data pointer to v as big endian. */
     template <typename T>
     void setBE(T v);
@@ -1012,9 +1273,18 @@ class Packet : public Printable
     template <typename T>
     void set(T v, ByteOrder endian);
 
-    /** Set the value in the data pointer to v as guest endian. */
-    template <typename T>
-    void set(T v);
+    /**
+     * Get the data in the packet byte swapped from the specified
+     * endianness and zero-extended to 64 bits.
+     */
+    uint64_t getUintX(ByteOrder endian) const;
+
+    /**
+     * Set the value in the word w after truncating it to the length
+     * of the packet and then byteswapping it to the desired
+     * endianness.
+     */
+    void setUintX(uint64_t w, ByteOrder endian);
 
     /**
      * Copy data into the packet from the provided pointer.
@@ -1027,10 +1297,11 @@ class Packet : public Printable
         // same pointer from source to destination and back
         assert(p != getPtr<uint8_t>() || flags.isSet(STATIC_DATA));
 
-        if (p != getPtr<uint8_t>())
+        if (p != getPtr<uint8_t>()) {
             // for packet with allocated dynamic data, we copy data from
             // one to the other, e.g. a forwarded response to a response
             std::memcpy(getPtr<uint8_t>(), p, getSize());
+        }
     }
 
     /**
@@ -1044,17 +1315,32 @@ class Packet : public Printable
     }
 
     /**
-     * Copy data from the packet to the provided block pointer, which
-     * is aligned to the given block size.
+     * Copy data from the packet to the memory at the provided pointer.
+     * @param p Pointer to which data will be copied.
      */
     void
     writeData(uint8_t *p) const
     {
-        std::memcpy(p, getConstPtr<uint8_t>(), getSize());
+        if (!isMaskedWrite()) {
+            std::memcpy(p, getConstPtr<uint8_t>(), getSize());
+        } else {
+            assert(req->getByteEnable().size() == getSize());
+            // Write only the enabled bytes
+            const uint8_t *base = getConstPtr<uint8_t>();
+            for (unsigned int i = 0; i < getSize(); i++) {
+                if (req->getByteEnable()[i]) {
+                    p[i] = *(base + i);
+                }
+                // Disabled bytes stay untouched
+            }
+        }
     }
 
     /**
-     * Copy data from the packet to the memory at the provided pointer.
+     * Copy data from the packet to the provided block pointer, which
+     * is aligned to the given block size.
+     * @param blk_data Pointer to block to which data will be copied.
+     * @param blkSize Block size in bytes.
      */
     void
     writeDataToBlock(uint8_t *blk_data, int blkSize) const
@@ -1091,7 +1377,6 @@ class Packet : public Printable
 
     /** @} */
 
-  private: // Private data accessor methods
     /** Get the data in the packet without byte swapping. */
     template <typename T>
     T getRaw() const;
@@ -1111,14 +1396,25 @@ class Packet : public Printable
      * accordingly.
      */
     bool
-    checkFunctional(PacketPtr other)
+    trySatisfyFunctional(PacketPtr other)
     {
+        if (other->isMaskedWrite()) {
+            // Do not forward data if overlapping with a masked write
+            if (_isSecure == other->isSecure() &&
+                getAddr() <= (other->getAddr() + other->getSize() - 1) &&
+                other->getAddr() <= (getAddr() + getSize() - 1)) {
+                warn("Trying to check against a masked write, skipping."
+                     " (addr: 0x%x, other addr: 0x%x)", getAddr(),
+                     other->getAddr());
+            }
+            return false;
+        }
         // all packets that are carrying a payload should have a valid
         // data pointer
-        return checkFunctional(other, other->getAddr(), other->isSecure(),
-                               other->getSize(),
-                               other->hasData() ?
-                               other->getPtr<uint8_t>() : NULL);
+        return trySatisfyFunctional(other, other->getAddr(), other->isSecure(),
+                                    other->getSize(),
+                                    other->hasData() ?
+                                    other->getPtr<uint8_t>() : NULL);
     }
 
     /**
@@ -1141,6 +1437,12 @@ class Packet : public Printable
         return cmd == MemCmd::CleanEvict || cmd == MemCmd::WritebackClean;
     }
 
+    bool
+    isMaskedWrite() const
+    {
+        return (cmd == MemCmd::WriteReq && req->isMasked());
+    }
+
     /**
      * Check a functional request against a memory value represented
      * by a base/size pair and an associated data array. If the
@@ -1149,8 +1451,8 @@ class Packet : public Printable
      * memory value.
      */
     bool
-    checkFunctional(Printable *obj, Addr base, bool is_secure, int size,
-                    uint8_t *_data);
+    trySatisfyFunctional(Printable *obj, Addr base, bool is_secure, int size,
+                         uint8_t *_data);
 
     /**
      * Push label for PrintReq (safe to call unconditionally).
@@ -1182,6 +1484,60 @@ class Packet : public Printable
      * @return string with the request's type and start<->end addresses
      */
     std::string print() const;
+
+    // hardware transactional memory
+
+    /**
+     * Communicates to the core that a packet was processed by the memory
+     * subsystem while running in transactional mode.
+     * It may happen that the transaction has failed at the memory subsystem
+     * and this needs to be communicated to the core somehow.
+     * This function decorates the response packet with flags to indicate
+     * such a situation has occurred.
+     */
+    void makeHtmTransactionalReqResponse(const HtmCacheFailure ret_code);
+
+    /**
+     * Stipulates that this packet/request originates in the CPU executing
+     * in transactional mode, i.e. within a transaction.
+     */
+    void setHtmTransactional(uint64_t val);
+
+    /**
+     * Returns whether or not this packet/request originates in the CPU
+     * executing in transactional mode, i.e. within a transaction.
+     */
+    bool isHtmTransactional() const;
+
+    /**
+     * If a packet/request originates in a CPU executing in transactional
+     * mode, i.e. within a transaction, this function returns the unique ID
+     * of the transaction. This is used for verifying correctness
+     * and debugging.
+     */
+    uint64_t getHtmTransactionUid() const;
+
+    /**
+     * Stipulates that this packet/request has returned from the
+     * cache hierarchy in a failed transaction. The core is
+     * notified like this.
+     */
+    void setHtmTransactionFailedInCache(const HtmCacheFailure ret_code);
+
+    /**
+     * Returns whether or not this packet/request has returned from the
+     * cache hierarchy in a failed transaction. The core is
+     * notified liked this.
+     */
+    bool htmTransactionFailedInCache() const;
+
+    /**
+     * If a packet/request has returned from the cache hierarchy in a
+     * failed transaction, this function returns the failure reason.
+     */
+    HtmCacheFailure getHtmTransactionFailedInCacheRC() const;
 };
+
+} // namespace gem5
 
 #endif //__MEM_PACKET_HH

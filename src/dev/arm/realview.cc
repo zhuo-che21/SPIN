@@ -36,31 +36,22 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Ali Saidi
  */
 
 /** @file
  * Implementation of RealView platform.
  */
 
-#include <deque>
-#include <string>
-#include <vector>
-
-#include "config/the_isa.hh"
-#include "cpu/intr_control.hh"
-#include "dev/arm/base_gic.hh"
 #include "dev/arm/realview.hh"
-#include "dev/terminal.hh"
-#include "sim/system.hh"
 
-using namespace std;
-using namespace TheISA;
+#include "base/logging.hh"
+#include "dev/arm/base_gic.hh"
 
+namespace gem5
+{
 
-RealView::RealView(const Params *p)
-    : Platform(p), system(p->system), gic(nullptr)
+RealView::RealView(const Params &p)
+    : Platform(p), gic(nullptr)
 {}
 
 void
@@ -89,8 +80,4 @@ RealView::clearPciInt(int line)
     gic->clearInt(line);
 }
 
-RealView *
-RealViewParams::create()
-{
-    return new RealView(this);
-}
+} // namespace gem5

@@ -33,32 +33,35 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Peter Enns
  */
 
 #include "dev/i2c/bus.hh"
 
+#include "base/trace.hh"
 #include "debug/Checkpoint.hh"
 #include "dev/i2c/device.hh"
 #include "mem/packet_access.hh"
+#include "sim/serialize.hh"
 
 // clang complains about std::set being overloaded with Packet::set if
 // we open up the entire namespace std
 using std::vector;
 using std::map;
 
+namespace gem5
+{
+
 /**
  * 4KB - see e.g.
  * http://infocenter.arm.com/help/topic/com.arm.doc.dui0440b/Bbajihec.html
  */
-I2CBus::I2CBus(const I2CBusParams *p)
-    : BasicPioDevice(p, 0xfff), scl(1), sda(1), state(IDLE), currBit(7),
+I2CBus::I2CBus(const I2CBusParams &p)
+    : BasicPioDevice(p, 0x1000), scl(1), sda(1), state(IDLE), currBit(7),
       i2cAddr(0x00), message(0x00)
 {
-    vector<I2CDevice*> devs = p->devices;
+    vector<I2CDevice*> devs = p.devices;
 
-    for (auto d : p->devices) {
+    for (auto d : p.devices) {
         devices[d->i2cAddr()] = d;
     }
 }
@@ -72,7 +75,7 @@ I2CBus::read(PacketPtr pkt)
 {
     assert(pkt->getAddr() == pioAddr + SB_CONTROLS);
 
-    pkt->set<uint8_t>((sda << 1) | scl);
+    pkt->setRaw<uint8_t>((sda << 1) | scl);
     pkt->makeAtomicResponse();
     return pioDelay;
 }
@@ -172,7 +175,7 @@ I2CBus::write(PacketPtr pkt)
 void
 I2CBus::updateSignals(PacketPtr pkt)
 {
-    uint8_t msg = pkt->get<uint8_t>();
+    uint8_t msg = pkt->getRaw<uint8_t>();
     Addr daddr = pkt->getAddr() - pioAddr;
 
     switch (daddr) {
@@ -192,7 +195,7 @@ I2CBus::updateSignals(PacketPtr pkt)
 bool
 I2CBus::isClockSet(PacketPtr pkt) const
 {
-    uint8_t msg = pkt->get<uint8_t>();
+    uint8_t msg = pkt->getRaw<uint8_t>();
     Addr daddr = pkt->getAddr() - pioAddr;
     return daddr == SB_CONTROLS && (msg & 1);
 }
@@ -200,7 +203,7 @@ I2CBus::isClockSet(PacketPtr pkt) const
 bool
 I2CBus::isStart(PacketPtr pkt) const
 {
-    uint8_t msg = pkt->get<uint8_t>();
+    uint8_t msg = pkt->getRaw<uint8_t>();
     Addr daddr = pkt->getAddr() - pioAddr;
     return scl && (msg & 2) && daddr == SB_CONTROLC;
 }
@@ -208,7 +211,7 @@ I2CBus::isStart(PacketPtr pkt) const
 bool
 I2CBus::isEnd(PacketPtr pkt) const
 {
-    uint8_t msg = pkt->get<uint8_t>();
+    uint8_t msg = pkt->getRaw<uint8_t>();
     Addr daddr = pkt->getAddr() - pioAddr;
     return scl && (msg & 2) && daddr == SB_CONTROLS;
 }
@@ -236,8 +239,4 @@ I2CBus::unserialize(CheckpointIn &cp)
     UNSERIALIZE_SCALAR(message);
 }
 
-I2CBus*
-I2CBusParams::create()
-{
-    return new I2CBus(this);
-}
+} // namespace gem5

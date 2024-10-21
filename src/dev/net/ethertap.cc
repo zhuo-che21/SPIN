@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
  */
 
 /* @file
@@ -38,13 +36,28 @@
 #include <sys/param.h>
 
 #endif
+
+#if HAVE_TUNTAP && defined(__linux__)
+#if 1 // Hide from the style checker since these have to be out of order.
+#include <sys/socket.h> // Has to be included before if.h for some reason.
+
+#endif
+
+#include <linux/if.h>
+#include <linux/if_tun.h>
+
+#endif
+
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <deque>
 #include <string>
 
-#include "base/misc.hh"
+#include "base/logging.hh"
 #include "base/pollevent.hh"
 #include "base/socket.hh"
 #include "base/trace.hh"
@@ -53,218 +66,147 @@
 #include "dev/net/etherdump.hh"
 #include "dev/net/etherint.hh"
 #include "dev/net/etherpkt.hh"
+#include "sim/core.hh"
+#include "sim/cur_tick.hh"
 
-using namespace std;
-
-/**
- */
-class TapListener
+namespace gem5
 {
-  protected:
-    /**
-     */
-    class Event : public PollEvent
-    {
-      protected:
-        TapListener *listener;
 
-      public:
-        Event(TapListener *l, int fd, int e)
-            : PollEvent(fd, e), listener(l) {}
-
-        virtual void process(int revent) { listener->accept(); }
-    };
-
-    friend class Event;
-    Event *event;
-
-  protected:
-    ListenSocket listener;
-    EtherTap *tap;
-    int port;
-
-  public:
-    TapListener(EtherTap *t, int p)
-        : event(NULL), tap(t), port(p) {}
-    ~TapListener() { if (event) delete event; }
-
-    void accept();
-    void listen();
-};
-
-void
-TapListener::listen()
-{
-    while (!listener.listen(port, true)) {
-        DPRINTF(Ethernet, "TapListener(listen): Can't bind port %d\n", port);
-        port++;
-    }
-
-    ccprintf(cerr, "Listening for tap connection on port %d\n", port);
-    event = new Event(this, listener.getfd(), POLLIN|POLLERR);
-    pollQueue.schedule(event);
-}
-
-void
-TapListener::accept()
-{
-    // As a consequence of being called from the PollQueue, we might
-    // have been called from a different thread. Migrate to "our"
-    // thread.
-    EventQueue::ScopedMigration migrate(tap->eventQueue());
-
-    if (!listener.islistening())
-        panic("TapListener(accept): cannot accept if we're not listening!");
-
-    int sfd = listener.accept(true);
-    if (sfd != -1)
-        tap->attach(sfd);
-}
-
-/**
- */
 class TapEvent : public PollEvent
 {
   protected:
-    EtherTap *tap;
+    EtherTapBase *tap;
 
   public:
-    TapEvent(EtherTap *_tap, int fd, int e)
+    TapEvent(EtherTapBase *_tap, int fd, int e)
         : PollEvent(fd, e), tap(_tap) {}
-    virtual void process(int revent) { tap->process(revent); }
+
+    void
+    process(int revent) override
+    {
+        // Ensure that our event queue is active. It may not be since we get
+        // here from the PollQueue whenever a real packet happens to arrive.
+        EventQueue::ScopedMigration migrate(tap->eventQueue());
+
+        tap->recvReal(revent);
+    }
 };
 
-EtherTap::EtherTap(const Params *p)
-    : EtherObject(p), event(NULL), socket(-1), buflen(p->bufsz), dump(p->dump),
-      interface(NULL), txEvent(this)
+EtherTapBase::EtherTapBase(const Params &p)
+    : SimObject(p), buflen(p.bufsz), dump(p.dump), event(NULL),
+      interface(NULL),
+      txEvent([this]{ retransmit(); }, "EtherTapBase retransmit")
 {
-    if (ListenSocket::allDisabled())
-        fatal("All listeners are disabled! EtherTap can't work!");
-
-    buffer = new char[buflen];
-    listener = new TapListener(this, p->port);
-    listener->listen();
+    buffer = new uint8_t[buflen];
     interface = new EtherTapInt(name() + ".interface", this);
 }
 
-EtherTap::~EtherTap()
+EtherTapBase::~EtherTapBase()
 {
-    if (event)
-        delete event;
-    if (buffer)
-        delete [] buffer;
-
+    delete buffer;
+    delete event;
     delete interface;
-    delete listener;
 }
 
 void
-EtherTap::attach(int fd)
+EtherTapBase::serialize(CheckpointOut &cp) const
 {
-    if (socket != -1)
-        close(fd);
+    SERIALIZE_SCALAR(buflen);
+    uint8_t *buffer = (uint8_t *)this->buffer;
+    SERIALIZE_ARRAY(buffer, buflen);
 
-    buffer_offset = 0;
-    data_len = 0;
-    socket = fd;
-    DPRINTF(Ethernet, "EtherTap attached\n");
-    event = new TapEvent(this, socket, POLLIN|POLLERR);
+    bool tapevent_present = false;
+    if (event) {
+        tapevent_present = true;
+        SERIALIZE_SCALAR(tapevent_present);
+        event->serialize(cp);
+    } else {
+        SERIALIZE_SCALAR(tapevent_present);
+    }
+}
+
+void
+EtherTapBase::unserialize(CheckpointIn &cp)
+{
+    UNSERIALIZE_SCALAR(buflen);
+    uint8_t *buffer = (uint8_t *)this->buffer;
+    UNSERIALIZE_ARRAY(buffer, buflen);
+
+    bool tapevent_present;
+    UNSERIALIZE_SCALAR(tapevent_present);
+    if (tapevent_present) {
+        event = new TapEvent(this, 0, 0);
+        event->unserialize(cp);
+        if (event->queued())
+            pollQueue.schedule(event);
+    }
+}
+
+
+void
+EtherTapBase::pollFd(int fd)
+{
+    assert(!event);
+    event = new TapEvent(this, fd, POLLIN|POLLERR);
     pollQueue.schedule(event);
 }
 
 void
-EtherTap::detach()
+EtherTapBase::stopPolling()
 {
-    DPRINTF(Ethernet, "EtherTap detached\n");
+    assert(event);
     delete event;
-    event = 0;
-    close(socket);
-    socket = -1;
+    event = NULL;
+}
+
+
+Port &
+EtherTapBase::getPort(const std::string &if_name, PortID idx)
+{
+    if (if_name == "tap")
+        return *interface;
+    return SimObject::getPort(if_name, idx);
 }
 
 bool
-EtherTap::recvPacket(EthPacketPtr packet)
+EtherTapBase::recvSimulated(EthPacketPtr packet)
 {
     if (dump)
         dump->dump(packet);
 
-    DPRINTF(Ethernet, "EtherTap output len=%d\n", packet->length);
+    DPRINTF(Ethernet, "EtherTap sim->real len=%d\n", packet->length);
     DDUMP(EthernetData, packet->data, packet->length);
-    uint32_t len = htonl(packet->length);
-    ssize_t ret = write(socket, &len, sizeof(len));
-    if (ret != sizeof(len))
-        return false;
-    ret = write(socket, packet->data, packet->length);
-    if (ret != packet->length)
-        return false;
+
+    bool success = sendReal(packet->data, packet->length);
 
     interface->recvDone();
 
-    return true;
+    return success;
 }
 
 void
-EtherTap::sendDone()
-{}
-
-void
-EtherTap::process(int revent)
+EtherTapBase::sendSimulated(void *data, size_t len)
 {
-    if (revent & POLLERR) {
-        detach();
-        return;
-    }
+    EthPacketPtr packet;
+    packet = std::make_shared<EthPacketData>(len);
+    packet->length = len;
+    packet->simLength = len;
+    memcpy(packet->data, data, len);
 
-    char *data = buffer + sizeof(uint32_t);
-    if (!(revent & POLLIN))
-        return;
-
-    if (buffer_offset < data_len + sizeof(uint32_t)) {
-        int len = read(socket, buffer + buffer_offset, buflen - buffer_offset);
-        if (len == 0) {
-            detach();
-            return;
-        }
-
-        buffer_offset += len;
-
-        if (data_len == 0)
-            data_len = ntohl(*(uint32_t *)buffer);
-
-        DPRINTF(Ethernet, "Received data from peer: len=%d buffer_offset=%d "
-                "data_len=%d\n", len, buffer_offset, data_len);
-    }
-
-    while (data_len != 0 && buffer_offset >= data_len + sizeof(uint32_t)) {
-        EthPacketPtr packet;
-        packet = make_shared<EthPacketData>(data_len);
-        packet->length = data_len;
-        packet->simLength = data_len;
-        memcpy(packet->data, data, data_len);
-
-        assert(buffer_offset >= data_len + sizeof(uint32_t));
-        buffer_offset -= data_len + sizeof(uint32_t);
-        if (buffer_offset > 0) {
-            memmove(buffer, data + data_len, buffer_offset);
-            data_len = ntohl(*(uint32_t *)buffer);
-        } else
-            data_len = 0;
-
-        DPRINTF(Ethernet, "EtherTap input len=%d\n", packet->length);
-        DDUMP(EthernetData, packet->data, packet->length);
-        if (!interface->sendPacket(packet)) {
-            DPRINTF(Ethernet, "bus busy...buffer for retransmission\n");
-            packetBuffer.push(packet);
-            if (!txEvent.scheduled())
-                schedule(txEvent, curTick() + retryTime);
-        } else if (dump) {
-            dump->dump(packet);
-        }
+    DPRINTF(Ethernet, "EtherTap real->sim len=%d\n", packet->length);
+    DDUMP(EthernetData, packet->data, packet->length);
+    if (!packetBuffer.empty() || !interface->sendPacket(packet)) {
+        DPRINTF(Ethernet, "bus busy...buffer for retransmission\n");
+        packetBuffer.push(packet);
+        if (!txEvent.scheduled())
+            schedule(txEvent, curTick() + sim_clock::as_int::ns);
+    } else if (dump) {
+        dump->dump(packet);
     }
 }
 
 void
-EtherTap::retransmit()
+EtherTapBase::retransmit()
 {
     if (packetBuffer.empty())
         return;
@@ -279,71 +221,253 @@ EtherTap::retransmit()
     }
 
     if (!packetBuffer.empty() && !txEvent.scheduled())
-        schedule(txEvent, curTick() + retryTime);
+        schedule(txEvent, curTick() + sim_clock::as_int::ns);
 }
 
-EtherInt*
-EtherTap::getEthPort(const std::string &if_name, int idx)
+
+class TapListener
 {
-    if (if_name == "tap") {
-        if (interface->getPeer())
-            panic("Interface already connected to\n");
-        return interface;
-    }
-    return NULL;
-}
+  protected:
+    class Event : public PollEvent
+    {
+      protected:
+        TapListener *listener;
 
+      public:
+        Event(TapListener *l, int fd, int e) : PollEvent(fd, e), listener(l) {}
 
-//=====================================================================
+        void process(int revent) override { listener->accept(); }
+    };
+
+    friend class Event;
+    Event *event = nullptr;
+
+    void accept();
+
+  protected:
+    ListenSocketPtr listener;
+    EtherTapStub *tap;
+
+  public:
+    TapListener(EtherTapStub *t, ListenSocketPtr _listener) :
+        listener(std::move(_listener)), tap(t) {}
+    ~TapListener() { delete event; }
+
+    void listen();
+};
 
 void
-EtherTap::serialize(CheckpointOut &cp) const
+TapListener::listen()
 {
+    listener->listen();
+
+    event = new Event(this, listener->getfd(), POLLIN|POLLERR);
+    pollQueue.schedule(event);
+}
+
+void
+TapListener::accept()
+{
+    // As a consequence of being called from the PollQueue, we might
+    // have been called from a different thread. Migrate to "our"
+    // thread.
+    EventQueue::ScopedMigration migrate(tap->eventQueue());
+
+    if (!listener->islistening())
+        panic("TapListener(accept): cannot accept if we're not listening!");
+
+    int sfd = listener->accept();
+    if (sfd != -1)
+        tap->attach(sfd);
+}
+
+
+EtherTapStub::EtherTapStub(const Params &p) : EtherTapBase(p), socket(-1)
+{
+    if (ListenSocket::allDisabled())
+        fatal("All listeners are disabled! EtherTapStub can't work!");
+
+    listener = new TapListener(this, p.port.build(name()));
+    listener->listen();
+}
+
+EtherTapStub::~EtherTapStub()
+{
+    delete listener;
+}
+
+void
+EtherTapStub::serialize(CheckpointOut &cp) const
+{
+    EtherTapBase::serialize(cp);
+
     SERIALIZE_SCALAR(socket);
-    SERIALIZE_SCALAR(buflen);
-    uint8_t *buffer = (uint8_t *)this->buffer;
-    SERIALIZE_ARRAY(buffer, buflen);
-    SERIALIZE_SCALAR(buffer_offset);
-    SERIALIZE_SCALAR(data_len);
-
-    bool tapevent_present = false;
-    if (event) {
-        tapevent_present = true;
-        SERIALIZE_SCALAR(tapevent_present);
-        event->serialize(cp);
-    }
-    else {
-        SERIALIZE_SCALAR(tapevent_present);
-    }
+    SERIALIZE_SCALAR(buffer_used);
+    SERIALIZE_SCALAR(frame_len);
 }
 
 void
-EtherTap::unserialize(CheckpointIn &cp)
+EtherTapStub::unserialize(CheckpointIn &cp)
 {
+    EtherTapBase::unserialize(cp);
+
     UNSERIALIZE_SCALAR(socket);
-    UNSERIALIZE_SCALAR(buflen);
-    uint8_t *buffer = (uint8_t *)this->buffer;
-    UNSERIALIZE_ARRAY(buffer, buflen);
-    UNSERIALIZE_SCALAR(buffer_offset);
-    UNSERIALIZE_SCALAR(data_len);
+    UNSERIALIZE_SCALAR(buffer_used);
+    UNSERIALIZE_SCALAR(frame_len);
+}
 
-    bool tapevent_present;
-    UNSERIALIZE_SCALAR(tapevent_present);
-    if (tapevent_present) {
-        event = new TapEvent(this, socket, POLLIN|POLLERR);
 
-        event->unserialize(cp);
+void
+EtherTapStub::attach(int fd)
+{
+    if (socket != -1)
+        close(fd);
 
-        if (event->queued()) {
-            pollQueue.schedule(event);
+    buffer_used = 0;
+    frame_len = 0;
+    socket = fd;
+    DPRINTF(Ethernet, "EtherTapStub attached\n");
+    pollFd(socket);
+}
+
+void
+EtherTapStub::detach()
+{
+    DPRINTF(Ethernet, "EtherTapStub detached\n");
+    stopPolling();
+    close(socket);
+    socket = -1;
+}
+
+void
+EtherTapStub::recvReal(int revent)
+{
+    if (revent & POLLERR) {
+        detach();
+        return;
+    }
+
+    if (!(revent & POLLIN))
+        return;
+
+    // Read in as much of the new data as we can.
+    int len = read(socket, buffer + buffer_used, buflen - buffer_used);
+    if (len == 0) {
+        detach();
+        return;
+    }
+    buffer_used += len;
+
+    // If there's not enough data for the frame length, wait for more.
+    if (buffer_used < sizeof(uint32_t))
+        return;
+
+    if (frame_len == 0)
+        frame_len = ntohl(*(uint32_t *)buffer);
+
+    DPRINTF(Ethernet, "Received data from peer: len=%d buffer_used=%d "
+            "frame_len=%d\n", len, buffer_used, frame_len);
+
+    uint8_t *frame_start = &buffer[sizeof(uint32_t)];
+    while (frame_len != 0 && buffer_used >= frame_len + sizeof(uint32_t)) {
+        sendSimulated(frame_start, frame_len);
+
+        // Bookkeeping.
+        buffer_used -= frame_len + sizeof(uint32_t);
+        if (buffer_used > 0) {
+            // If there's still any data left, move it into position.
+            memmove(buffer, frame_start + frame_len, buffer_used);
+        }
+        frame_len = 0;
+
+        if (buffer_used >= sizeof(uint32_t))
+            frame_len = ntohl(*(uint32_t *)buffer);
+    }
+}
+
+bool
+EtherTapStub::sendReal(const void *data, size_t len)
+{
+    uint32_t frame_len = htonl(len);
+    ssize_t ret = write(socket, &frame_len, sizeof(frame_len));
+    if (ret != sizeof(frame_len))
+        return false;
+    return write(socket, data, len) == len;
+}
+
+
+#if HAVE_TUNTAP
+
+EtherTap::EtherTap(const Params &p) : EtherTapBase(p)
+{
+    int fd = open(p.tun_clone_device.c_str(), O_RDWR | O_NONBLOCK);
+    if (fd < 0)
+        panic("Couldn't open %s.\n", p.tun_clone_device);
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    strncpy(ifr.ifr_name, p.tap_device_name.c_str(), IFNAMSIZ - 1);
+
+    if (ioctl(fd, TUNSETIFF, (void *)&ifr) < 0)
+        panic("Failed to access tap device %s.\n", ifr.ifr_name);
+    // fd now refers to the tap device.
+    tap = fd;
+    pollFd(tap);
+}
+
+EtherTap::~EtherTap()
+{
+    stopPolling();
+    close(tap);
+    tap = -1;
+}
+
+void
+EtherTap::recvReal(int revent)
+{
+    if (revent & POLLERR)
+        panic("Error polling for tap data.\n");
+
+    if (!(revent & POLLIN))
+        return;
+
+    ssize_t ret;
+    while ((ret = read(tap, buffer, buflen))) {
+        if (ret < 0) {
+            if (errno == EAGAIN)
+                break;
+            panic("Failed to read from tap device.\n");
+        }
+
+        sendSimulated(buffer, ret);
+    }
+}
+
+bool
+EtherTap::sendReal(const void *data, size_t len)
+{
+    int n;
+    pollfd pfd[1];
+    pfd->fd = tap;
+    pfd->events = POLLOUT;
+
+    // `tap` is a nonblock fd. Here we try to write until success, and use
+    // poll to make a blocking wait.
+    while ((n = write(tap, data, len)) != len) {
+        if (errno != EAGAIN)
+            panic("Failed to write data to tap device.\n");
+        pfd->revents = 0;
+        int ret = poll(pfd, 1, -1);
+        // timeout is set to inf, we shouldn't get 0 in any case.
+        assert(ret != 0);
+        if (ret == -1 || (ret == 1 && (pfd->revents & POLLERR))) {
+            panic("Failed when polling to write data to tap device.\n");
         }
     }
+    return true;
 }
 
-//=====================================================================
+#endif // HAVE_TUNTAP
 
-EtherTap *
-EtherTapParams::create()
-{
-    return new EtherTap(this);
-}
+} // namespace gem5

@@ -2,8 +2,6 @@
  * Copyright (c) 2013-2015 Advanced Micro Devices, Inc.
  * All rights reserved.
  *
- * For use for simulation and test purposes only
- *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *
@@ -14,9 +12,9 @@
  * this list of conditions and the following disclaimer in the documentation
  * and/or other materials provided with the distribution.
  *
- * 3. Neither the name of the copyright holder nor the names of its contributors
- * may be used to endorse or promote products derived from this software
- * without specific prior written permission.
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from this
+ * software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -29,47 +27,69 @@
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * Author: Sooraj Puthoor
  */
 
-#ifndef __MEM_RUBY_SYSTEM_VI_COALESCER_HH__
-#define __MEM_RUBY_SYSTEM_VI_COALESCER_HH__
+#ifndef __MEM_RUBY_SYSTEM_VIPERCOALESCER_HH__
+#define __MEM_RUBY_SYSTEM_VIPERCOALESCER_HH__
 
 #include <iostream>
 
-#include "mem/protocol/PrefetchBit.hh"
-#include "mem/protocol/RubyAccessMode.hh"
-#include "mem/protocol/RubyRequestType.hh"
 #include "mem/ruby/common/Address.hh"
 #include "mem/ruby/common/Consumer.hh"
+#include "mem/ruby/protocol/PrefetchBit.hh"
+#include "mem/ruby/protocol/RubyAccessMode.hh"
+#include "mem/ruby/protocol/RubyRequestType.hh"
 #include "mem/ruby/system/GPUCoalescer.hh"
 #include "mem/ruby/system/RubyPort.hh"
 
+namespace gem5
+{
+
+struct VIPERCoalescerParams;
+
+namespace ruby
+{
+
 class DataBlock;
 class CacheMsg;
-class MachineID;
+struct MachineID;
 class CacheMemory;
-
-class VIPERCoalescerParams;
 
 class VIPERCoalescer : public GPUCoalescer
 {
   public:
     typedef VIPERCoalescerParams Params;
-    VIPERCoalescer(const Params *);
+    VIPERCoalescer(const Params &);
     ~VIPERCoalescer();
-    void wbCallback(Addr address);
-    void invCallback(Addr address);
-    RequestStatus makeRequest(PacketPtr pkt);
-  private:
-    void invL1();
-    void wbL1();
-    void invwbL1();
-    uint64_t m_outstanding_inv;
-    uint64_t m_outstanding_wb;
-    uint64_t m_max_inv_per_cycle;
-    uint64_t m_max_wb_per_cycle;
-};
-#endif // __MEM_RUBY_SYSTEM_VI_COALESCER_HH__
+    void writeCompleteCallback(Addr address, uint64_t instSeqNum);
+    void invTCPCallback(Addr address);
+    RequestStatus makeRequest(PacketPtr pkt) override;
+    void issueRequest(CoalescedRequest* crequest) override;
 
+  private:
+    void invTCP();
+
+    // make write-complete response packets from original write request packets
+    void makeWriteCompletePkts(CoalescedRequest* crequest);
+
+    // current cache invalidation packet
+    // nullptr if there is no active cache invalidation request
+    PacketPtr m_cache_inv_pkt;
+
+    // number of remaining cache lines to be invalidated in TCP
+    int m_num_pending_invs;
+
+    // a map of instruction sequence number and corresponding pending
+    // write-complete response packets. Each write-complete response
+    // corresponds to a pending store request that is waiting for
+    // writeCompleteCallback. We may have multiple pending store requests per
+    // wavefront at a time. Each time writeCompleteCallback is called, an entry
+    // with a corresponding seqNum is popped off from map and returned to
+    // compute unit.
+    std::unordered_map<uint64_t, std::vector<PacketPtr>> m_writeCompletePktMap;
+};
+
+} // namespace ruby
+} // namespace gem5
+
+#endif //__MEM_RUBY_SYSTEM_VIPERCOALESCER_HH__

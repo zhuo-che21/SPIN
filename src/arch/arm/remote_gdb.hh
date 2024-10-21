@@ -1,7 +1,7 @@
 /*
  * Copyright 2015 LabWare
  * Copyright 2014 Google, Inc.
- * Copyright (c) 2013 ARM Limited
+ * Copyright (c) 2013, 2016, 2018-2019 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -39,10 +39,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
- *          Stephen Hines
- *          Boris Shingarov
  */
 
 #ifndef __ARCH_ARM_REMOTE_GDB_HH__
@@ -50,8 +46,13 @@
 
 #include <algorithm>
 
+#include "arch/arm/regs/vec.hh"
 #include "arch/arm/utility.hh"
+#include "base/compiler.hh"
 #include "base/remote_gdb.hh"
+
+namespace gem5
+{
 
 class System;
 class ThreadContext;
@@ -62,49 +63,74 @@ namespace ArmISA
 class RemoteGDB : public BaseRemoteGDB
 {
   protected:
-    bool acc(Addr addr, size_t len);
+    bool acc(Addr addr, size_t len) override;
 
     class AArch32GdbRegCache : public BaseGdbRegCache
     {
       using BaseGdbRegCache::BaseGdbRegCache;
-      private:
-        struct {
+      protected:
+        struct GEM5_PACKED
+        {
           uint32_t gpr[16];
-          uint32_t fpr[8*3];
-          uint32_t fpscr;
           uint32_t cpsr;
+          uint64_t fpr[32];
+          uint32_t fpscr;
         } r;
       public:
-        char *data() const { return (char *)&r; }
-        size_t size() const { return sizeof(r); }
-        void getRegs(ThreadContext*);
-        void setRegs(ThreadContext*) const;
-        const std::string name() const { return gdb->name() + ".AArch32GdbRegCache"; }
+        char *data() const override { return (char *)&r; }
+        size_t size() const override { return sizeof(r); }
+        void getRegs(ThreadContext*) override;
+        void setRegs(ThreadContext*) const override;
+        const std::string
+        name() const override
+        {
+            return gdb->name() + ".AArch32GdbRegCache";
+        }
     };
 
     class AArch64GdbRegCache : public BaseGdbRegCache
     {
       using BaseGdbRegCache::BaseGdbRegCache;
-      private:
-        struct {
+      protected:
+        struct GEM5_PACKED
+        {
           uint64_t x[31];
           uint64_t spx;
           uint64_t pc;
-          uint64_t cpsr;
-          uint32_t v[32*4];
+          uint32_t cpsr;
+          VecElem v[NumVecV8ArchRegs * NumVecElemPerNeonVecReg];
+          uint32_t fpsr;
+          uint32_t fpcr;
         } r;
       public:
-        char *data() const { return (char *)&r; }
-        size_t size() const { return sizeof(r); }
-        void getRegs(ThreadContext*);
-        void setRegs(ThreadContext*) const;
-        const std::string name() const { return gdb->name() + ".AArch64GdbRegCache"; }
+        char *data() const override { return (char *)&r; }
+        size_t size() const override { return sizeof(r); }
+        void getRegs(ThreadContext*) override;
+        void setRegs(ThreadContext*) const override;
+        const std::string
+        name() const override
+        {
+            return gdb->name() + ".AArch64GdbRegCache";
+        }
     };
 
+    AArch32GdbRegCache regCache32;
+    AArch64GdbRegCache regCache64;
+
   public:
-    RemoteGDB(System *_system, ThreadContext *tc);
-    BaseGdbRegCache *gdbRegs();
+    RemoteGDB(System *_system, ListenSocketConfig _listen_config);
+    BaseGdbRegCache *gdbRegs() override;
+    bool checkBpKind(size_t kind) override;
+    std::vector<std::string>
+    availableFeatures() const override
+    {
+        return {"qXfer:features:read+"};
+    };
+    bool getXferFeaturesRead(const std::string &annex,
+                             std::string &output) override;
 };
+
 } // namespace ArmISA
+} // namespace gem5
 
 #endif /* __ARCH_ARM_REMOTE_GDB_H__ */

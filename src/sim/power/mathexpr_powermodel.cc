@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016 ARM Limited
+ * Copyright (c) 2016-2017, 2020-2021 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -33,11 +33,11 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: David Guillen Fandos
  */
 
 #include "sim/power/mathexpr_powermodel.hh"
+
+#include <string>
 
 #include "base/statistics.hh"
 #include "params/MathExprPowerModel.hh"
@@ -45,44 +45,66 @@
 #include "sim/power/thermal_model.hh"
 #include "sim/sim_object.hh"
 
-MathExprPowerModel::MathExprPowerModel(const Params *p)
-    : PowerModelState(p), dyn_expr(p->dyn), st_expr(p->st)
+namespace gem5
 {
-    // Calculate the name of the object we belong to
-    std::vector<std::string> path;
-    tokenize(path, name(), '.', true);
-    // It's something like xyz.power_model.pm2
-    assert(path.size() > 2);
-    for (unsigned i = 0; i < path.size() - 2; i++)
-        basename += path[i] + ".";
+
+MathExprPowerModel::MathExprPowerModel(const Params &p)
+    : PowerModelState(p), dyn_expr(p.dyn), st_expr(p.st)
+{
 }
 
 void
 MathExprPowerModel::startup()
 {
-    // Create a map with stats and pointers for quick access
-    // Has to be done here, since we need access to the statsList
-    for (auto & i: Stats::statsList())
-        if (i->name.find(basename) == 0)
-            stats_map[i->name.substr(basename.size())] = i;
+    for (auto expr: {dyn_expr, st_expr}) {
+        std::vector<std::string> vars = expr.getVariables();
+
+        for (auto var: vars) {
+            // Automatic variables:
+            if (var == "temp" || var == "voltage" || var == "clock_period") {
+                continue;
+            }
+
+            auto *info = statistics::resolve(var);
+            fatal_if(!info, "Failed to evaluate %s in expression:\n%s\n",
+                     var, expr.toStr());
+            statsMap[var] = info;
+        }
+    }
+}
+
+double
+MathExprPowerModel::eval(const MathExpr &expr) const
+{
+    return expr.eval(
+        std::bind(&MathExprPowerModel::getStatValue,
+                  this, std::placeholders::_1)
+        );
 }
 
 double
 MathExprPowerModel::getStatValue(const std::string &name) const
 {
-    using namespace Stats;
+    using namespace statistics;
 
     // Automatic variables:
-    if (name == "temp")
-        return _temp;
+    if (name == "temp") {
+        return _temp.toCelsius();
+    } else if (name == "voltage") {
+        return clocked_object->voltage();
+    } else if (name=="clock_period") {
+        return clocked_object->clockPeriod();
+    }
+
+    const auto it = statsMap.find(name);
+    assert(it != statsMap.cend());
+    const Info *info = it->second;
 
     // Try to cast the stat, only these are supported right now
-    Info *info = stats_map.at(name);
-
-    ScalarInfo *si = dynamic_cast<ScalarInfo*>(info);
+    auto si = dynamic_cast<const ScalarInfo *>(info);
     if (si)
         return si->value();
-    FormulaInfo *fi = dynamic_cast<FormulaInfo*>(info);
+    auto fi = dynamic_cast<const FormulaInfo *>(info);
     if (fi)
         return fi->total();
 
@@ -95,8 +117,4 @@ MathExprPowerModel::regStats()
     PowerModelState::regStats();
 }
 
-MathExprPowerModel*
-MathExprPowerModelParams::create()
-{
-    return new MathExprPowerModel(this);
-}
+} // namespace gem5

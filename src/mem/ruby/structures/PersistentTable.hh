@@ -32,10 +32,16 @@
 #include <iostream>
 #include <unordered_map>
 
-#include "mem/protocol/AccessType.hh"
 #include "mem/ruby/common/Address.hh"
 #include "mem/ruby/common/MachineID.hh"
 #include "mem/ruby/common/NetDest.hh"
+#include "mem/ruby/protocol/AccessType.hh"
+
+namespace gem5
+{
+
+namespace ruby
+{
 
 class PersistentTableEntry
 {
@@ -96,5 +102,8 @@ operator<<(std::ostream& out, const PersistentTableEntry& obj)
     out << std::flush;
     return out;
 }
+
+} // namespace ruby
+} // namespace gem5
 
 #endif // __MEM_RUBY_STRUCTURES_PERSISTENTTABLE_HH__

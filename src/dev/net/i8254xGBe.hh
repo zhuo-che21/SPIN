@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Ali Saidi
  */
 
 /* @file
@@ -35,11 +33,13 @@
 #ifndef __DEV_NET_I8254XGBE_HH__
 #define __DEV_NET_I8254XGBE_HH__
 
+#include <cstdint>
 #include <deque>
 #include <string>
 
-#include "base/cp_annotate.hh"
 #include "base/inet.hh"
+#include "base/trace.hh"
+#include "base/types.hh"
 #include "debug/EthernetDesc.hh"
 #include "debug/EthernetIntr.hh"
 #include "dev/net/etherdevice.hh"
@@ -50,6 +50,10 @@
 #include "dev/pci/device.hh"
 #include "params/IGbE.hh"
 #include "sim/eventq.hh"
+#include "sim/serialize.hh"
+
+namespace gem5
+{
 
 class IGbEInt;
 
@@ -57,15 +61,14 @@ class IGbE : public EtherDevice
 {
   private:
     IGbEInt *etherInt;
-    CPA *cpa;
 
     // device registers
-    iGbReg::Regs regs;
+    igbreg::Regs regs;
 
     // eeprom data, status and control bits
     int eeOpBits, eeAddrBits, eeDataBits;
     uint8_t eeOpcode, eeAddr;
-    uint16_t flash[iGbReg::EEPROM_SIZE];
+    uint16_t flash[igbreg::EEPROM_SIZE];
 
     // packet fifos
     PacketFifo rxFifo;
@@ -75,6 +78,7 @@ class IGbE : public EtherDevice
     EthPacketPtr txPacket;
 
     // Should to Rx/Tx State machine tick?
+    bool inTick;
     bool rxTick;
     bool txTick;
     bool txFifoTick;
@@ -94,48 +98,43 @@ class IGbE : public EtherDevice
         rxDescCache.writeback(0);
         DPRINTF(EthernetIntr,
                 "Posting RXT interrupt because RDTR timer expired\n");
-        postInterrupt(iGbReg::IT_RXT);
+        postInterrupt(igbreg::IT_RXT);
     }
 
-    //friend class EventWrapper<IGbE, &IGbE::rdtrProcess>;
-    EventWrapper<IGbE, &IGbE::rdtrProcess> rdtrEvent;
+    EventFunctionWrapper rdtrEvent;
 
     // Event and function to deal with RADV timer expiring
     void radvProcess() {
         rxDescCache.writeback(0);
         DPRINTF(EthernetIntr,
                 "Posting RXT interrupt because RADV timer expired\n");
-        postInterrupt(iGbReg::IT_RXT);
+        postInterrupt(igbreg::IT_RXT);
     }
 
-    //friend class EventWrapper<IGbE, &IGbE::radvProcess>;
-    EventWrapper<IGbE, &IGbE::radvProcess> radvEvent;
+    EventFunctionWrapper radvEvent;
 
     // Event and function to deal with TADV timer expiring
     void tadvProcess() {
         txDescCache.writeback(0);
         DPRINTF(EthernetIntr,
                 "Posting TXDW interrupt because TADV timer expired\n");
-        postInterrupt(iGbReg::IT_TXDW);
+        postInterrupt(igbreg::IT_TXDW);
     }
 
-    //friend class EventWrapper<IGbE, &IGbE::tadvProcess>;
-    EventWrapper<IGbE, &IGbE::tadvProcess> tadvEvent;
+    EventFunctionWrapper tadvEvent;
 
     // Event and function to deal with TIDV timer expiring
     void tidvProcess() {
         txDescCache.writeback(0);
         DPRINTF(EthernetIntr,
                 "Posting TXDW interrupt because TIDV timer expired\n");
-        postInterrupt(iGbReg::IT_TXDW);
+        postInterrupt(igbreg::IT_TXDW);
     }
-    //friend class EventWrapper<IGbE, &IGbE::tidvProcess>;
-    EventWrapper<IGbE, &IGbE::tidvProcess> tidvEvent;
+    EventFunctionWrapper tidvEvent;
 
     // Main event to tick the device
     void tick();
-    //friend class EventWrapper<IGbE, &IGbE::tick>;
-    EventWrapper<IGbE, &IGbE::tick> tickEvent;
+    EventFunctionWrapper tickEvent;
 
 
     uint64_t macAddr;
@@ -149,7 +148,7 @@ class IGbE : public EtherDevice
      * @param t the type of interrupt we are posting
      * @param now should we ignore the interrupt limiting timer
      */
-    void postInterrupt(iGbReg::IntTypes t, bool now = false);
+    void postInterrupt(igbreg::IntTypes t, bool now = false);
 
     /** Check and see if changes to the mask register have caused an interrupt
      * to need to be sent or perhaps removed an interrupt cause.
@@ -161,13 +160,13 @@ class IGbE : public EtherDevice
     void delayIntEvent();
     void cpuPostInt();
     // Event to moderate interrupts
-    EventWrapper<IGbE, &IGbE::delayIntEvent> interEvent;
+    EventFunctionWrapper interEvent;
 
     /** Clear the interupt line to the cpu
      */
     void cpuClearInt();
 
-    Tick intClock() { return SimClock::Int::ns * 1024; }
+    Tick intClock() { return sim_clock::as_int::ns * 1024; }
 
     /** This function is used to restart the clock so it can handle things like
      * draining and resume in one place. */
@@ -177,42 +176,6 @@ class IGbE : public EtherDevice
      * handle the drain event if so.
      */
     void checkDrain();
-
-    void anBegin(std::string sm, std::string st, int flags = CPA::FL_NONE) {
-        if (cpa)
-            cpa->hwBegin((CPA::flags)flags, sys, macAddr, sm, st);
-    }
-
-    void anQ(std::string sm, std::string q) {
-        if (cpa)
-            cpa->hwQ(CPA::FL_NONE, sys, macAddr, sm, q, macAddr);
-    }
-
-    void anDq(std::string sm, std::string q) {
-        if (cpa)
-            cpa->hwDq(CPA::FL_NONE, sys, macAddr, sm, q, macAddr);
-    }
-
-    void anPq(std::string sm, std::string q, int num = 1) {
-        if (cpa)
-            cpa->hwPq(CPA::FL_NONE, sys, macAddr, sm, q, macAddr, NULL, num);
-    }
-
-    void anRq(std::string sm, std::string q, int num = 1) {
-        if (cpa)
-            cpa->hwRq(CPA::FL_NONE, sys, macAddr, sm, q, macAddr, NULL, num);
-    }
-
-    void anWe(std::string sm, std::string q) {
-        if (cpa)
-            cpa->hwWe(CPA::FL_NONE, sys, macAddr, sm, q, macAddr);
-    }
-
-    void anWf(std::string sm, std::string q) {
-        if (cpa)
-            cpa->hwWf(CPA::FL_NONE, sys, macAddr, sm, q, macAddr);
-    }
-
 
     template<class T>
     class DescCache : public Serializable
@@ -283,24 +246,24 @@ class IGbE : public EtherDevice
 
         void writeback(Addr aMask);
         void writeback1();
-        EventWrapper<DescCache, &DescCache::writeback1> wbDelayEvent;
+        EventFunctionWrapper wbDelayEvent;
 
         /** Fetch a chunk of descriptors into the descriptor cache.
          * Calls fetchComplete when the memory system returns the data
          */
         void fetchDescriptors();
         void fetchDescriptors1();
-        EventWrapper<DescCache, &DescCache::fetchDescriptors1> fetchDelayEvent;
+        EventFunctionWrapper fetchDelayEvent;
 
         /** Called by event when dma to read descriptors is completed
          */
         void fetchComplete();
-        EventWrapper<DescCache, &DescCache::fetchComplete> fetchEvent;
+        EventFunctionWrapper fetchEvent;
 
         /** Called by event when dma to writeback descriptors is completed
          */
         void wbComplete();
-        EventWrapper<DescCache, &DescCache::wbComplete> wbEvent;
+        EventFunctionWrapper wbEvent;
 
         /* Return the number of descriptors left in the ring, so the device has
          * a way to figure out if it needs to interrupt.
@@ -339,7 +302,7 @@ class IGbE : public EtherDevice
     };
 
 
-    class RxDescCache : public DescCache<iGbReg::RxDesc>
+    class RxDescCache : public DescCache<igbreg::RxDesc>
     {
       protected:
         Addr descBase() const override { return igbe->regs.rdba(); }
@@ -383,13 +346,13 @@ class IGbE : public EtherDevice
          */
         bool packetDone();
 
-        EventWrapper<RxDescCache, &RxDescCache::pktComplete> pktEvent;
+        EventFunctionWrapper pktEvent;
 
         // Event to handle issuing header and data write at the same time
         // and only callking pktComplete() when both are completed
         void pktSplitDone();
-        EventWrapper<RxDescCache, &RxDescCache::pktSplitDone> pktHdrEvent;
-        EventWrapper<RxDescCache, &RxDescCache::pktSplitDone> pktDataEvent;
+        EventFunctionWrapper pktHdrEvent;
+        EventFunctionWrapper pktDataEvent;
 
         bool hasOutstandingEvents() override;
 
@@ -400,7 +363,7 @@ class IGbE : public EtherDevice
 
     RxDescCache rxDescCache;
 
-    class TxDescCache  : public DescCache<iGbReg::TxDesc>
+    class TxDescCache  : public DescCache<igbreg::TxDesc>
     {
       protected:
         Addr descBase() const override { return igbe->regs.tdba(); }
@@ -458,7 +421,7 @@ class IGbE : public EtherDevice
         unsigned
         descInBlock(unsigned num_desc)
         {
-            return num_desc / igbe->cacheBlockSize() / sizeof(iGbReg::TxDesc);
+            return num_desc / igbe->cacheBlockSize() / sizeof(igbreg::TxDesc);
         }
 
         /** Ask if the packet has been transfered so the state machine can give
@@ -483,10 +446,10 @@ class IGbE : public EtherDevice
         /** Called by event when dma to write packet is completed
          */
         void pktComplete();
-        EventWrapper<TxDescCache, &TxDescCache::pktComplete> pktEvent;
+        EventFunctionWrapper pktEvent;
 
         void headerComplete();
-        EventWrapper<TxDescCache, &TxDescCache::headerComplete> headerEvent;
+        EventFunctionWrapper headerEvent;
 
 
         void completionWriteback(Addr a, bool enabled) {
@@ -502,7 +465,7 @@ class IGbE : public EtherDevice
         void nullCallback() {
             DPRINTF(EthernetDesc, "Completion writeback complete\n");
         }
-        EventWrapper<TxDescCache, &TxDescCache::nullCallback> nullEvent;
+        EventFunctionWrapper nullEvent;
 
         void serialize(CheckpointOut &cp) const override;
         void unserialize(CheckpointIn &cp) override;
@@ -513,17 +476,14 @@ class IGbE : public EtherDevice
     TxDescCache txDescCache;
 
   public:
-    typedef IGbEParams Params;
-    const Params *
-    params() const {
-        return dynamic_cast<const Params *>(_params);
-    }
+    PARAMS(IGbE);
 
-    IGbE(const Params *params);
+    IGbE(const Params &params);
     ~IGbE();
     void init() override;
 
-    EtherInt *getEthPort(const std::string &if_name, int idx) override;
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
 
     Tick lastInterrupt;
 
@@ -556,5 +516,7 @@ class IGbEInt : public EtherInt
     virtual bool recvPacket(EthPacketPtr pkt) { return dev->ethRxPkt(pkt); }
     virtual void sendDone() { dev->ethTxDone(); }
 };
+
+} // namespace gem5
 
 #endif //__DEV_NET_I8254XGBE_HH__

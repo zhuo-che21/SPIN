@@ -24,14 +24,19 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Kevin Lim
  */
+
+#include "cpu/pred/btb.hh"
 
 #include "base/intmath.hh"
 #include "base/trace.hh"
-#include "cpu/pred/btb.hh"
 #include "debug/Fetch.hh"
+
+namespace gem5
+{
+
+namespace branch_prediction
+{
 
 DefaultBTB::DefaultBTB(unsigned _numEntries,
                        unsigned _tagBits,
@@ -107,33 +112,36 @@ DefaultBTB::valid(Addr instPC, ThreadID tid)
 // @todo Create some sort of return struct that has both whether or not the
 // address is valid, and also the address.  For now will just use addr = 0 to
 // represent invalid entry.
-TheISA::PCState
-DefaultBTB::lookup(Addr instPC, ThreadID tid)
+const PCStateBase *
+DefaultBTB::lookup(Addr inst_pc, ThreadID tid)
 {
-    unsigned btb_idx = getIndex(instPC, tid);
+    unsigned btb_idx = getIndex(inst_pc, tid);
 
-    Addr inst_tag = getTag(instPC);
+    Addr inst_tag = getTag(inst_pc);
 
     assert(btb_idx < numEntries);
 
     if (btb[btb_idx].valid
         && inst_tag == btb[btb_idx].tag
         && btb[btb_idx].tid == tid) {
-        return btb[btb_idx].target;
+        return btb[btb_idx].target.get();
     } else {
-        return 0;
+        return nullptr;
     }
 }
 
 void
-DefaultBTB::update(Addr instPC, const TheISA::PCState &target, ThreadID tid)
+DefaultBTB::update(Addr inst_pc, const PCStateBase &target, ThreadID tid)
 {
-    unsigned btb_idx = getIndex(instPC, tid);
+    unsigned btb_idx = getIndex(inst_pc, tid);
 
     assert(btb_idx < numEntries);
 
     btb[btb_idx].tid = tid;
     btb[btb_idx].valid = true;
-    btb[btb_idx].target = target;
-    btb[btb_idx].tag = getTag(instPC);
+    set(btb[btb_idx].target, target);
+    btb[btb_idx].tag = getTag(inst_pc);
 }
+
+} // namespace branch_prediction
+} // namespace gem5

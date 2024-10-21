@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 ARM Limited
+ * Copyright (c) 2013-2014, 2018 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -33,8 +33,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Andrew Bardsley
  */
 
 /**
@@ -47,12 +45,20 @@
 #ifndef __CPU_MINOR_NEW_LSQ_HH__
 #define __CPU_MINOR_NEW_LSQ_HH__
 
+#include <string>
+#include <vector>
+
+#include "base/named.hh"
 #include "cpu/minor/buffers.hh"
 #include "cpu/minor/cpu.hh"
 #include "cpu/minor/pipe_data.hh"
 #include "cpu/minor/trace.hh"
+#include "mem/packet.hh"
 
-namespace Minor
+namespace gem5
+{
+
+namespace minor
 {
 
 /* Forward declaration */
@@ -118,7 +124,7 @@ class LSQ : public Named
      *  translation, the queues in this port and back from the memory
      *  system. */
     class LSQRequest :
-        public BaseTLB::Translation, /* For TLB lookups */
+        public BaseMMU::Translation, /* For TLB lookups */
         public Packet::SenderState /* For packing into a Packet */
     {
       public:
@@ -143,10 +149,7 @@ class LSQ : public Named
         PacketPtr packet;
 
         /** The underlying request of this LSQRequest */
-        Request request;
-
-        /** Fault generated performing this request */
-        Fault fault;
+        RequestPtr request;
 
         /** Res from pushRequest */
         uint64_t *res;
@@ -159,6 +162,9 @@ class LSQ : public Named
         /** This in an access other than a normal cacheable load
          *  that's visited the memory system */
         bool issuedToMemory;
+
+        /** Address translation is delayed due to table walk */
+        bool isTranslationDelayed;
 
         enum LSQRequestState
         {
@@ -185,12 +191,19 @@ class LSQ : public Named
         LSQRequestState state;
 
       protected:
-        /** BaseTLB::Translation interface */
-        void markDelayed() { }
+        /** BaseMMU::Translation interface */
+        void markDelayed() { isTranslationDelayed = true; }
+
+        /** Instructions may want to suppress translation faults (e.g.
+         *  non-faulting vector loads).*/
+        void tryToSuppressFault();
+
+        void disableMemAccess();
+        void completeDisabledMemAccess();
 
       public:
         LSQRequest(LSQ &port_, MinorDynInstPtr inst_, bool isLoad_,
-            PacketDataPtr data_ = NULL, uint64_t *res_ = NULL);
+                PacketDataPtr data_ = NULL, uint64_t *res_ = NULL);
 
         virtual ~LSQRequest();
 
@@ -272,8 +285,8 @@ class LSQ : public Named
     {
       protected:
         /** TLB interace */
-        void finish(const Fault &fault_, RequestPtr request_,
-                    ThreadContext *tc, BaseTLB::Mode mode)
+        void finish(const Fault &fault_, const RequestPtr &request_,
+                    ThreadContext *tc, BaseMMU::Mode mode)
         { }
 
       public:
@@ -333,8 +346,8 @@ class LSQ : public Named
     {
       protected:
         /** TLB interace */
-        void finish(const Fault &fault_, RequestPtr request_,
-                    ThreadContext *tc, BaseTLB::Mode mode);
+        void finish(const Fault &fault_, const RequestPtr &request_,
+                    ThreadContext *tc, BaseMMU::Mode mode);
 
         /** Has my only packet been sent to the memory system but has not
          *  yet been responded to */
@@ -377,20 +390,7 @@ class LSQ : public Named
     {
       protected:
         /** Event to step between translations */
-        class TranslationEvent : public Event
-        {
-          protected:
-            SplitDataRequest &owner;
-
-          public:
-            TranslationEvent(SplitDataRequest &owner_)
-                : owner(owner_) { }
-
-            void process()
-            { owner.sendNextFragmentToTranslation(); }
-        };
-
-        TranslationEvent translationEvent;
+        EventFunctionWrapper translationEvent;
       protected:
         /** Number of fragments this request is split into */
         unsigned int numFragments;
@@ -412,15 +412,15 @@ class LSQ : public Named
 
         /** Fragment Requests corresponding to the address ranges of
          *  each fragment */
-        std::vector<Request *> fragmentRequests;
+        std::vector<RequestPtr> fragmentRequests;
 
         /** Packets matching fragmentRequests to issue fragments to memory */
         std::vector<Packet *> fragmentPackets;
 
       protected:
         /** TLB response interface */
-        void finish(const Fault &fault_, RequestPtr request_,
-                    ThreadContext *tc, BaseTLB::Mode mode);
+        void finish(const Fault &fault_, const RequestPtr &request_,
+                    ThreadContext *tc, BaseMMU::Mode mode);
 
       public:
         SplitDataRequest(LSQ &port_, MinorDynInstPtr inst_,
@@ -454,7 +454,8 @@ class LSQ : public Named
         { return numIssuedFragments != numRetiredFragments; }
 
         /** Have we stepped past the end of fragmentPackets? */
-        bool sentAllPackets() { return numIssuedFragments == numFragments; }
+        bool sentAllPackets()
+        { return numIssuedFragments == numTranslatedFragments; }
 
         /** For loads, paste the response data into the main
          *  response packet */
@@ -709,11 +710,13 @@ class LSQ : public Named
     void completeMemBarrierInst(MinorDynInstPtr inst,
         bool committed);
 
-    /** Single interface for readMem/writeMem to issue requests into
+    /** Single interface for readMem/writeMem/amoMem to issue requests into
      *  the LSQ */
-    void pushRequest(MinorDynInstPtr inst, bool isLoad, uint8_t *data,
-                     unsigned int size, Addr addr, Request::Flags flags,
-                     uint64_t *res);
+    Fault pushRequest(MinorDynInstPtr inst, bool isLoad, uint8_t *data,
+                      unsigned int size, Addr addr, Request::Flags flags,
+                      uint64_t *res, AtomicOpFunctorPtr amo_op,
+                      const std::vector<bool>& byte_enable =
+                          std::vector<bool>());
 
     /** Push a predicate failed-representing request into the queues just
      *  to maintain commit order */
@@ -733,8 +736,10 @@ class LSQ : public Named
 /** Make a suitable packet for the given request.  If the request is a store,
  *  data will be the payload data.  If sender_state is NULL, it won't be
  *  pushed into the packet as senderState */
-PacketPtr makePacketForRequest(Request &request, bool isLoad,
+PacketPtr makePacketForRequest(const RequestPtr &request, bool isLoad,
     Packet::SenderState *sender_state = NULL, PacketDataPtr data = NULL);
-}
+
+} // namespace minor
+} // namespace gem5
 
 #endif /* __CPU_MINOR_NEW_LSQ_HH__ */

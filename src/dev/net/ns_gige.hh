@@ -24,9 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
- *          Lisa Hsu
  */
 
 /** @file
@@ -47,6 +44,9 @@
 #include "params/NSGigE.hh"
 #include "sim/eventq.hh"
 
+namespace gem5
+{
+
 // Hash filtering constants
 const uint16_t FHASH_ADDR  = 0x100;
 const uint16_t FHASH_SIZE  = 0x100;
@@ -61,7 +61,8 @@ const uint8_t  EEPROM_PMATCH0_ADDR = 0xC; // EEPROM Address of PMATCH word 0
 /**
  * Ethernet device registers
  */
-struct dp_regs {
+struct dp_regs
+{
     uint32_t    command;
     uint32_t    config;
     uint32_t    mear;
@@ -98,7 +99,8 @@ struct dp_regs {
     uint32_t    tesr;
 };
 
-struct dp_rom {
+struct dp_rom
+{
     /**
      * for perfect match memory.
      * the linux driver doesn't use any other ROM
@@ -170,10 +172,6 @@ class NSGigE : public EtherDevBase
 
     /** pci settings */
     bool ioEnable;
-#if 0
-    bool memEnable;
-    bool bmEnable;
-#endif
 
     /*** BASIC STRUCTURES FOR TX/RX ***/
     /* Data FIFOs */
@@ -256,20 +254,16 @@ class NSGigE : public EtherDevBase
     bool  doTxDmaWrite();
 
     void rxDmaReadDone();
-    friend class EventWrapper<NSGigE, &NSGigE::rxDmaReadDone>;
-    EventWrapper<NSGigE, &NSGigE::rxDmaReadDone> rxDmaReadEvent;
+    EventFunctionWrapper rxDmaReadEvent;
 
     void rxDmaWriteDone();
-    friend class EventWrapper<NSGigE, &NSGigE::rxDmaWriteDone>;
-    EventWrapper<NSGigE, &NSGigE::rxDmaWriteDone> rxDmaWriteEvent;
+    EventFunctionWrapper rxDmaWriteEvent;
 
     void txDmaReadDone();
-    friend class EventWrapper<NSGigE, &NSGigE::txDmaReadDone>;
-    EventWrapper<NSGigE, &NSGigE::txDmaReadDone> txDmaReadEvent;
+    EventFunctionWrapper txDmaReadEvent;
 
     void txDmaWriteDone();
-    friend class EventWrapper<NSGigE, &NSGigE::txDmaWriteDone>;
-    EventWrapper<NSGigE, &NSGigE::txDmaWriteDone> txDmaWriteEvent;
+    EventFunctionWrapper txDmaWriteEvent;
 
     bool dmaDescFree;
     bool dmaDataFree;
@@ -284,15 +278,11 @@ class NSGigE : public EtherDevBase
 
     void rxKick();
     Tick rxKickTick;
-    typedef EventWrapper<NSGigE, &NSGigE::rxKick> RxKickEvent;
-    friend void RxKickEvent::process();
-    RxKickEvent rxKickEvent;
+    EventFunctionWrapper rxKickEvent;
 
     void txKick();
     Tick txKickTick;
-    typedef EventWrapper<NSGigE, &NSGigE::txKick> TxKickEvent;
-    friend void TxKickEvent::process();
-    TxKickEvent txKickEvent;
+    EventFunctionWrapper txKickEvent;
 
     void eepromKick();
 
@@ -306,9 +296,7 @@ class NSGigE : public EtherDevBase
         if (txState == txFifoBlock)
             txKick();
     }
-    typedef EventWrapper<NSGigE, &NSGigE::txEventTransmit> TxEvent;
-    friend void TxEvent::process();
-    TxEvent txEvent;
+    EventFunctionWrapper txEvent;
 
     void txDump() const;
     void rxDump() const;
@@ -339,21 +327,17 @@ class NSGigE : public EtherDevBase
     void cpuInterrupt();
     void cpuIntrClear();
 
-    typedef EventWrapper<NSGigE, &NSGigE::cpuInterrupt> IntrEvent;
-    friend void IntrEvent::process();
-    IntrEvent *intrEvent;
+    EventFunctionWrapper *intrEvent;
     NSGigEInt *interface;
 
   public:
-    typedef NSGigEParams Params;
-    const Params *params() const {
-        return dynamic_cast<const Params *>(_params);
-    }
+    PARAMS(NSGigE);
 
-    NSGigE(Params *params);
+    NSGigE(const Params &params);
     ~NSGigE();
 
-    EtherInt *getEthPort(const std::string &if_name, int idx) override;
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
 
     Tick writeConfig(PacketPtr pkt) override;
 
@@ -388,5 +372,7 @@ class NSGigEInt : public EtherInt
     virtual bool recvPacket(EthPacketPtr pkt) { return dev->recvPacket(pkt); }
     virtual void sendDone() { dev->transferDone(); }
 };
+
+} // namespace gem5
 
 #endif // __DEV_NET_NS_GIGE_HH__

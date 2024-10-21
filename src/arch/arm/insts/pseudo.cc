@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014,2016 ARM Limited
+ * Copyright (c) 2014,2016-2018 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -36,13 +36,16 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Andreas Sandberg
- *          Stephen Hines
  */
 
 #include "arch/arm/insts/pseudo.hh"
+
 #include "cpu/exec_context.hh"
+
+namespace gem5
+{
+
+using namespace ArmISA;
 
 DecoderFaultInst::DecoderFaultInst(ExtMachInst _machInst)
     : ArmStaticInst("gem5decoderFault", _machInst, No_OpClass),
@@ -55,10 +58,9 @@ DecoderFaultInst::DecoderFaultInst(ExtMachInst _machInst)
 }
 
 Fault
-DecoderFaultInst::execute(ExecContext *xc, Trace::InstRecord *traceData) const
+DecoderFaultInst::execute(ExecContext *xc, trace::InstRecord *traceData) const
 {
-    const PCState pc_state(xc->pcState());
-    const Addr pc(pc_state.instAddr());
+    const Addr pc = xc->pcState().instAddr();
 
     switch (faultId) {
       case DecoderFault::UNALIGNED:
@@ -99,7 +101,8 @@ DecoderFaultInst::faultName() const
 }
 
 std::string
-DecoderFaultInst::generateDisassembly(Addr pc, const SymbolTable *symtab) const
+DecoderFaultInst::generateDisassembly(
+        Addr pc, const loader::SymbolTable *symtab) const
 {
     return csprintf("gem5fault %s", faultName());
 }
@@ -127,13 +130,14 @@ FailUnimplemented::FailUnimplemented(const char *_mnemonic,
 }
 
 Fault
-FailUnimplemented::execute(ExecContext *xc, Trace::InstRecord *traceData) const
+FailUnimplemented::execute(ExecContext *xc, trace::InstRecord *traceData) const
 {
     return std::make_shared<UndefinedInstruction>(machInst, false, mnemonic);
 }
 
 std::string
-FailUnimplemented::generateDisassembly(Addr pc, const SymbolTable *symtab) const
+FailUnimplemented::generateDisassembly(
+        Addr pc, const loader::SymbolTable *symtab) const
 {
     return csprintf("%-10s (unimplemented)",
                     fullMnemonic.size() ? fullMnemonic.c_str() : mnemonic);
@@ -162,7 +166,7 @@ WarnUnimplemented::WarnUnimplemented(const char *_mnemonic,
 }
 
 Fault
-WarnUnimplemented::execute(ExecContext *xc, Trace::InstRecord *traceData) const
+WarnUnimplemented::execute(ExecContext *xc, trace::InstRecord *traceData) const
 {
     if (!warned) {
         warn("\tinstruction '%s' unimplemented\n",
@@ -174,48 +178,40 @@ WarnUnimplemented::execute(ExecContext *xc, Trace::InstRecord *traceData) const
 }
 
 std::string
-WarnUnimplemented::generateDisassembly(Addr pc, const SymbolTable *symtab) const
+WarnUnimplemented::generateDisassembly(
+        Addr pc, const loader::SymbolTable *symtab) const
 {
     return csprintf("%-10s (unimplemented)",
                     fullMnemonic.size() ? fullMnemonic.c_str() : mnemonic);
 }
 
-
-
-McrMrcMiscInst::McrMrcMiscInst(const char *_mnemonic, ExtMachInst _machInst,
-                             uint64_t _iss, MiscRegIndex _miscReg)
-    : ArmStaticInst(_mnemonic, _machInst, No_OpClass)
-{
-    flags[IsNonSpeculative] = true;
-    iss = _iss;
-    miscReg = _miscReg;
-}
+IllegalExecInst::IllegalExecInst(ExtMachInst _machInst)
+    : ArmStaticInst("Illegal Execution", _machInst, No_OpClass)
+{}
 
 Fault
-McrMrcMiscInst::execute(ExecContext *xc, Trace::InstRecord *traceData) const
+IllegalExecInst::execute(ExecContext *xc, trace::InstRecord *traceData) const
 {
-    uint32_t cpsr = xc->readMiscReg(MISCREG_CPSR);
-    uint32_t hcr = xc->readMiscReg(MISCREG_HCR);
-    uint32_t scr = xc->readMiscReg(MISCREG_SCR);
-    uint32_t hdcr = xc->readMiscReg(MISCREG_HDCR);
-    uint32_t hstr = xc->readMiscReg(MISCREG_HSTR);
-    uint32_t hcptr = xc->readMiscReg(MISCREG_HCPTR);
-
-    bool hypTrap  = mcrMrc15TrapToHyp(miscReg, hcr, cpsr, scr, hdcr, hstr,
-                                      hcptr, iss);
-    if (hypTrap) {
-        return std::make_shared<HypervisorTrap>(machInst, iss,
-                                                EC_TRAPPED_CP15_MCR_MRC);
-    }
-
-    if (miscReg == MISCREG_DCCMVAC)
-        return std::make_shared<FlushPipe>();
-    else
-        return NoFault;
+    return std::make_shared<IllegalInstSetStateFault>();
 }
 
-std::string
-McrMrcMiscInst::generateDisassembly(Addr pc, const SymbolTable *symtab) const
+DebugStep::DebugStep(ExtMachInst _machInst)
+    : ArmStaticInst("DebugStep", _machInst, No_OpClass)
+{ }
+
+Fault
+DebugStep::execute(ExecContext *xc, trace::InstRecord *traceData) const
 {
-    return csprintf("%-10s (pipe flush)", mnemonic);
+    PCState pc_state = xc->pcState().as<PCState>();
+    pc_state.debugStep(false);
+    xc->pcState(pc_state);
+
+    SelfDebug *sd = ArmISA::ISA::getSelfDebug(xc->tcBase());
+
+    bool ldx = sd->getSstep()->getLdx();
+
+    return std::make_shared<SoftwareStepFault>(machInst, ldx,
+                                               pc_state.stepped());
 }
+
+} // namespace gem5

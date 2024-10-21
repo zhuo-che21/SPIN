@@ -37,17 +37,14 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Steve Reinhardt
-#          Gabe Black
-#          Andreas Sandberg
 
 Import('*')
 
-if env['TARGET_ISA'] == 'null':
-    Return()
-
-SimObject('Ethernet.py')
+SimObject('Ethernet.py', sim_objects=[
+    'EtherLink', 'DistEtherLink', 'EtherBus', 'EtherSwitch', 'EtherTapBase',
+    'EtherTapStub', 'EtherDump', 'EtherDevice', 'IGbE', 'EtherDevBase',
+    'NSGigE', 'Sinic'] +
+    (['EtherTap'] if env['CONF']['HAVE_TUNTAP'] else []))
 
 # Basic Ethernet infrastructure
 Source('etherbus.cc')

@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Tushar Krishna
  */
 
 #ifndef __CPU_GARNET_SYNTHETIC_TRAFFIC_HH__
@@ -34,13 +32,16 @@
 #include <set>
 
 #include "base/statistics.hh"
-#include "mem/mem_object.hh"
 #include "mem/port.hh"
 #include "params/GarnetSyntheticTraffic.hh"
+#include "sim/clocked_object.hh"
 #include "sim/eventq.hh"
 #include "sim/sim_exit.hh"
 #include "sim/sim_object.hh"
 #include "sim/stats.hh"
+
+namespace gem5
+{
 
 enum TrafficType {BIT_COMPLEMENT_ = 0,
                   BIT_REVERSE_ = 1,
@@ -50,32 +51,22 @@ enum TrafficType {BIT_COMPLEMENT_ = 0,
                   TORNADO_ = 5,
                   TRANSPOSE_ = 6,
                   UNIFORM_RANDOM_ = 7,
-                  TORNADO_RANDOM_10 = 8,
-                  TORNADO_RANDOM_20 = 9,
-                  TORNADO_RANDOM_30 = 10,
-                  TORNADO_RANDOM_40 = 11,
-                  TORNADO_RANDOM_50 = 12,
-                  TORNADO_RANDOM_60 = 13,
-                  TORNADO_RANDOM_70 = 14,
-                  TORNADO_RANDOM_80 = 15,
-                  TORNADO_RANDOM_90 = 16,
-                  EDGE_50 = 17,
                   NUM_TRAFFIC_PATTERNS_};
 
 class Packet;
-class GarnetSyntheticTraffic : public MemObject
+class GarnetSyntheticTraffic : public ClockedObject
 {
   public:
     typedef GarnetSyntheticTrafficParams Params;
-    GarnetSyntheticTraffic(const Params *p);
+    GarnetSyntheticTraffic(const Params &p);
 
-    virtual void init();
+    void init() override;
 
     // main simulation loop (one cycle)
     void tick();
 
-    virtual BaseMasterPort &getMasterPort(const std::string &if_name,
-                                          PortID idx = InvalidPortID);
+    Port &getPort(const std::string &if_name,
+                  PortID idx=InvalidPortID) override;
 
     /**
      * Print state of address in memory system via PrintReq (for
@@ -84,30 +75,16 @@ class GarnetSyntheticTraffic : public MemObject
     void printAddr(Addr a);
 
   protected:
-    class TickEvent : public Event
-    {
-      private:
-        GarnetSyntheticTraffic *cpu;
+    EventFunctionWrapper tickEvent;
 
-      public:
-        TickEvent(GarnetSyntheticTraffic *c) : Event(CPU_Tick_Pri), cpu(c) {}
-        void process() { cpu->tick(); }
-        virtual const char *description() const
-        {
-            return "GarnetSyntheticTraffic tick";
-        }
-    };
-
-    TickEvent tickEvent;
-
-    class CpuPort : public MasterPort
+    class CpuPort : public RequestPort
     {
         GarnetSyntheticTraffic *tester;
 
       public:
 
         CpuPort(const std::string &_name, GarnetSyntheticTraffic *_tester)
-            : MasterPort(_name, _tester), tester(_tester)
+            : RequestPort(_name), tester(_tester)
         { }
 
       protected:
@@ -156,7 +133,7 @@ class GarnetSyntheticTraffic : public MemObject
 
     const Cycles responseLimit;
 
-    MasterID masterId;
+    RequestorID requestorId;
 
     void completeRequest(PacketPtr pkt);
 
@@ -169,7 +146,6 @@ class GarnetSyntheticTraffic : public MemObject
     friend class MemCompleteEvent;
 };
 
+} // namespace gem5
+
 #endif // __CPU_GARNET_SYNTHETIC_TRAFFIC_HH__
-
-
-

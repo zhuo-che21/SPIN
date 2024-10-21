@@ -24,9 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Nathan Binkert
- *          Lisa Hsu
  */
 
 /* @file
@@ -43,6 +40,9 @@
 #include "base/types.hh"
 #include "sim/serialize.hh"
 
+namespace gem5
+{
+
 /*
  * Reference counted class containing ethernet packet data
  */
@@ -53,6 +53,11 @@ class EthPacketData
      * Pointer to packet data will be deleted
      */
     uint8_t *data;
+
+    /**
+     * Total size of the allocated data buffer.
+     */
+    unsigned bufLength;
 
     /**
      * Amount of space occupied by the payload in the data buffer
@@ -69,11 +74,11 @@ class EthPacketData
     unsigned simLength;
 
     EthPacketData()
-        : data(nullptr), length(0), simLength(0)
+        : data(nullptr), bufLength(0), length(0), simLength(0)
     { }
 
     explicit EthPacketData(unsigned size)
-        : data(new uint8_t[size]), length(0), simLength(0)
+        : data(new uint8_t[size]), bufLength(size), length(0), simLength(0)
     { }
 
     ~EthPacketData() { if (data) delete [] data; }
@@ -83,5 +88,7 @@ class EthPacketData
 };
 
 typedef std::shared_ptr<EthPacketData> EthPacketPtr;
+
+} // namespace gem5
 
 #endif // __DEV_NET_ETHERPKT_HH__

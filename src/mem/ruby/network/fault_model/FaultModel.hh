@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Konstantinos Aisopos
  */
 
 /*
@@ -37,8 +35,8 @@
  * Proceedings of the 48th Design Automation Conference (DAC'11)
  */
 
-#ifndef __MEM_RUBY_NETWORK_FAULT_MODEL_HH__
-#define __MEM_RUBY_NETWORK_FAULT_MODEL_HH__
+#ifndef __MEM_RUBY_NETWORK_FAULT_MODEL_FAULTMODEL_HH__
+#define __MEM_RUBY_NETWORK_FAULT_MODEL_FAULTMODEL_HH__
 
 // tool limitations and fixed inputs
 #define MAX_VCs 40
@@ -52,12 +50,17 @@
 #include "params/FaultModel.hh"
 #include "sim/sim_object.hh"
 
+namespace gem5
+{
+
+namespace ruby
+{
+
 class FaultModel : public SimObject
 {
   public:
-    typedef FaultModelParams Params;
-    FaultModel(const Params *p);
-    const Params *params() const { return (const Params *)_params; }
+    using Params = FaultModelParams;
+    FaultModel(const Params &p);
 
     /************************************************************************/
     /**********  THE FAULT TYPES SUPPORTED BY THE FAULT MODEL ***************/
@@ -138,4 +141,7 @@ class FaultModel : public SimObject
     std::vector <int> temperature_weights;
 };
 
-#endif //  __MEM_RUBY_NETWORK_FAULT_MODEL_HH__
+} // namespace ruby
+} // namespace gem5
+
+#endif //__MEM_RUBY_NETWORK_FAULT_MODEL_FAULTMODEL_HH__

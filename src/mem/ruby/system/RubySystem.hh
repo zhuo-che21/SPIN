@@ -32,8 +32,10 @@
  * components of the system
  */
 
-#ifndef __MEM_RUBY_SYSTEM_SYSTEM_HH__
-#define __MEM_RUBY_SYSTEM_SYSTEM_HH__
+#ifndef __MEM_RUBY_SYSTEM_RUBYSYSTEM_HH__
+#define __MEM_RUBY_SYSTEM_RUBYSYSTEM_HH__
+
+#include <unordered_map>
 
 #include "base/callback.hh"
 #include "base/output.hh"
@@ -44,29 +46,25 @@
 #include "params/RubySystem.hh"
 #include "sim/clocked_object.hh"
 
+namespace gem5
+{
+
+namespace memory
+{
+class SimpleMemory;
+} // namespace memory
+
+namespace ruby
+{
+
 class Network;
 class AbstractController;
 
 class RubySystem : public ClockedObject
 {
   public:
-    class RubyEvent : public Event
-    {
-      public:
-        RubyEvent(RubySystem* _ruby_system)
-        {
-            m_ruby_system = _ruby_system;
-        }
-      private:
-        void process();
-
-        RubySystem* m_ruby_system;
-    };
-
-    friend class RubyEvent;
-
-    typedef RubySystemParams Params;
-    RubySystem(const Params *p);
+    PARAMS(RubySystem);
+    RubySystem(const Params &p);
     ~RubySystem();
 
     // config accessors
@@ -77,7 +75,7 @@ class RubySystem : public ClockedObject
     static bool getWarmupEnabled() { return m_warmup_enabled; }
     static bool getCooldownEnabled() { return m_cooldown_enabled; }
 
-    SimpleMemory *getPhysMem() { return m_phys_mem; }
+    memory::SimpleMemory *getPhysMem() { return m_phys_mem; }
     Cycles getStartCycle() { return m_start_cycle; }
     bool getAccessBackingStore() { return m_access_backing_store; }
 
@@ -91,7 +89,6 @@ class RubySystem : public ClockedObject
 
     void regStats() override {
         ClockedObject::regStats();
-        m_profiler->regStats(name());
     }
     void collateStats() { m_profiler->collateStats(); }
     void resetStats() override;
@@ -101,17 +98,21 @@ class RubySystem : public ClockedObject
     void unserialize(CheckpointIn &cp) override;
     void drainResume() override;
     void process();
+    void init() override;
     void startup() override;
     bool functionalRead(Packet *ptr);
     bool functionalWrite(Packet *ptr);
 
     void registerNetwork(Network*);
     void registerAbstractController(AbstractController*);
+    void registerMachineID(const MachineID& mach_id, Network* network);
+    void registerRequestorIDs();
 
     bool eventQueueEmpty() { return eventq->empty(); }
     void enqueueRubyEvent(Tick tick)
     {
-        RubyEvent* e = new RubyEvent(this);
+        auto e = new EventFunctionWrapper(
+            [this]{ processRubyEvent(); }, "RubyEvent");
         schedule(e, tick);
     }
 
@@ -130,6 +131,7 @@ class RubySystem : public ClockedObject
     static void writeCompressedTrace(uint8_t *raw_data, std::string file,
                                      uint64_t uncompressed_trace_size);
 
+    void processRubyEvent();
   private:
     // configuration parameters
     static bool m_randomization;
@@ -140,12 +142,17 @@ class RubySystem : public ClockedObject
     static bool m_warmup_enabled;
     static unsigned m_systems_to_warmup;
     static bool m_cooldown_enabled;
-    SimpleMemory *m_phys_mem;
+    memory::SimpleMemory *m_phys_mem;
     const bool m_access_backing_store;
 
-    Network* m_network;
+    //std::vector<Network *> m_networks;
+    std::vector<std::unique_ptr<Network>> m_networks;
     std::vector<AbstractController *> m_abs_cntrl_vec;
     Cycles m_start_cycle;
+
+    std::unordered_map<MachineID, unsigned> machineToNetwork;
+    std::unordered_map<RequestorID, unsigned> requestorToNetwork;
+    std::unordered_map<unsigned, std::vector<AbstractController*>> netCntrls;
 
   public:
     Profiler* m_profiler;
@@ -153,15 +160,7 @@ class RubySystem : public ClockedObject
     std::vector<std::map<uint32_t, AbstractController *> > m_abstract_controls;
 };
 
-class RubyStatsCallback : public Callback
-{
-  private:
-    RubySystem *m_ruby_system;
+} // namespace ruby
+} // namespace gem5
 
-  public:
-    virtual ~RubyStatsCallback() {}
-    RubyStatsCallback(RubySystem *system) : m_ruby_system(system) {}
-    void process() { m_ruby_system->collateStats(); }
-};
-
-#endif // __MEM_RUBY_SYSTEM_SYSTEM_HH__
+#endif //__MEM_RUBY_SYSTEM_RUBYSYSTEM_HH__

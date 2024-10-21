@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015 ARM Limited
+ * Copyright (c) 2014-2018, 2020-2021 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -36,34 +36,27 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Kevin Lim
- *          Andreas Sandberg
- *          Mitch Hayenga
  */
 
 #ifndef __CPU_SIMPLE_EXEC_CONTEXT_HH__
 #define __CPU_SIMPLE_EXEC_CONTEXT_HH__
 
-#include "arch/registers.hh"
 #include "base/types.hh"
-#include "config/the_isa.hh"
 #include "cpu/base.hh"
 #include "cpu/exec_context.hh"
+#include "cpu/reg_class.hh"
 #include "cpu/simple/base.hh"
 #include "cpu/static_inst_fwd.hh"
 #include "cpu/translation.hh"
 #include "mem/request.hh"
 
+namespace gem5
+{
+
 class BaseSimpleCPU;
 
-class SimpleExecContext : public ExecContext {
-  protected:
-    typedef TheISA::MiscReg MiscReg;
-    typedef TheISA::FloatReg FloatReg;
-    typedef TheISA::FloatRegBits FloatRegBits;
-    typedef TheISA::CCReg CCReg;
-
+class SimpleExecContext : public ExecContext
+{
   public:
     BaseSimpleCPU *cpu;
     SimpleThread* thread;
@@ -75,177 +68,186 @@ class SimpleExecContext : public ExecContext {
     bool stayAtPC;
 
     // Branch prediction
-    TheISA::PCState predPC;
+    std::unique_ptr<PCStateBase> predPC;
 
     /** PER-THREAD STATS */
-
-    // Number of simulated instructions
     Counter numInst;
-    Stats::Scalar numInsts;
     Counter numOp;
-    Stats::Scalar numOps;
-
-    // Number of integer alu accesses
-    Stats::Scalar numIntAluAccesses;
-
-    // Number of float alu accesses
-    Stats::Scalar numFpAluAccesses;
-
-    // Number of function calls/returns
-    Stats::Scalar numCallsReturns;
-
-    // Conditional control instructions;
-    Stats::Scalar numCondCtrlInsts;
-
-    // Number of int instructions
-    Stats::Scalar numIntInsts;
-
-    // Number of float instructions
-    Stats::Scalar numFpInsts;
-
-    // Number of integer register file accesses
-    Stats::Scalar numIntRegReads;
-    Stats::Scalar numIntRegWrites;
-
-    // Number of float register file accesses
-    Stats::Scalar numFpRegReads;
-    Stats::Scalar numFpRegWrites;
-
-    // Number of condition code register file accesses
-    Stats::Scalar numCCRegReads;
-    Stats::Scalar numCCRegWrites;
-
-    // Number of simulated memory references
-    Stats::Scalar numMemRefs;
-    Stats::Scalar numLoadInsts;
-    Stats::Scalar numStoreInsts;
-
-    // Number of idle cycles
-    Stats::Formula numIdleCycles;
-
-    // Number of busy cycles
-    Stats::Formula numBusyCycles;
-
     // Number of simulated loads
     Counter numLoad;
-
-    // Number of idle cycles
-    Stats::Average notIdleFraction;
-    Stats::Formula idleFraction;
-
     // Number of cycles stalled for I-cache responses
-    Stats::Scalar icacheStallCycles;
     Counter lastIcacheStall;
-
     // Number of cycles stalled for D-cache responses
-    Stats::Scalar dcacheStallCycles;
     Counter lastDcacheStall;
 
-    /// @{
-    /// Total number of branches fetched
-    Stats::Scalar numBranches;
-    /// Number of branches predicted as taken
-    Stats::Scalar numPredictedBranches;
-    /// Number of misprediced branches
-    Stats::Scalar numBranchMispred;
-    /// @}
+    struct ExecContextStats : public statistics::Group
+    {
+        ExecContextStats(BaseSimpleCPU *cpu, SimpleThread *thread)
+            : statistics::Group(cpu,
+                           csprintf("exec_context.thread_%i",
+                                    thread->threadId()).c_str()),
+              ADD_STAT(numMatAluAccesses, statistics::units::Count::get(),
+                       "Number of matrix alu accesses"),
+              ADD_STAT(numCallsReturns, statistics::units::Count::get(),
+                       "Number of times a function call or return occured"),
+              ADD_STAT(numMatInsts, statistics::units::Count::get(),
+                       "Number of matrix instructions"),
+              ADD_STAT(numIdleCycles, statistics::units::Cycle::get(),
+                       "Number of idle cycles"),
+              ADD_STAT(numBusyCycles, statistics::units::Cycle::get(),
+                       "Number of busy cycles"),
+              ADD_STAT(notIdleFraction, statistics::units::Ratio::get(),
+                       "Percentage of non-idle cycles"),
+              ADD_STAT(idleFraction, statistics::units::Ratio::get(),
+                       "Percentage of idle cycles"),
+              ADD_STAT(numPredictedBranches, statistics::units::Count::get(),
+                       "Number of branches predicted as taken"),
+              ADD_STAT(numBranchMispred, statistics::units::Count::get(),
+                       "Number of branch mispredictions"),
+              numRegReads{
+                  &(cpu->executeStats[thread->threadId()]->numIntRegReads),
+                  &(cpu->executeStats[thread->threadId()]->numFpRegReads),
+                  &(cpu->executeStats[thread->threadId()]->numVecRegReads),
+                  &(cpu->executeStats[thread->threadId()]->numVecRegReads),
+                  &(cpu->executeStats[thread->threadId()]->numVecPredRegReads),
+                  &(cpu->executeStats[thread->threadId()]->numCCRegReads),
+                  &numMatRegReads
+              },
+              numRegWrites{
+                  &(cpu->executeStats[thread->threadId()]->numIntRegWrites),
+                  &(cpu->executeStats[thread->threadId()]->numFpRegWrites),
+                  &(cpu->executeStats[thread->threadId()]->numVecRegWrites),
+                  &(cpu->executeStats[thread->threadId()]->numVecRegWrites),
+                  &(cpu->executeStats[thread->threadId()]
+                        ->numVecPredRegWrites),
+                  &(cpu->executeStats[thread->threadId()]->numCCRegWrites),
+                  &numMatRegWrites
+              }
+        {
+            idleFraction = statistics::constant(1.0) - notIdleFraction;
+            numIdleCycles = idleFraction * cpu->baseStats.numCycles;
+            numBusyCycles = notIdleFraction * cpu->baseStats.numCycles;
 
-   // Instruction mix histogram by OpClass
-   Stats::Vector statExecutedInstType;
+            numPredictedBranches
+                .prereq(numPredictedBranches);
+
+            numBranchMispred
+                .prereq(numBranchMispred);
+        }
+
+        // Number of matrix alu accesses
+        statistics::Scalar numMatAluAccesses;
+
+        // Number of function calls/returns
+        statistics::Scalar numCallsReturns;
+
+        // Number of matrix instructions
+        statistics::Scalar numMatInsts;
+
+        // Number of matrix register file accesses
+        mutable statistics::Scalar numMatRegReads;
+        statistics::Scalar numMatRegWrites;
+
+        // Number of idle cycles
+        statistics::Formula numIdleCycles;
+
+        // Number of busy cycles
+        statistics::Formula numBusyCycles;
+
+        // Number of idle cycles
+        statistics::Average notIdleFraction;
+        statistics::Formula idleFraction;
+
+        /// @{
+        /// Number of branches predicted as taken
+        statistics::Scalar numPredictedBranches;
+        /// Number of misprediced branches
+        statistics::Scalar numBranchMispred;
+        /// @}
+
+        std::array<statistics::Scalar *, CCRegClass + 1> numRegReads;
+        std::array<statistics::Scalar *, CCRegClass + 1> numRegWrites;
+
+    } execContextStats;
 
   public:
     /** Constructor */
     SimpleExecContext(BaseSimpleCPU* _cpu, SimpleThread* _thread)
         : cpu(_cpu), thread(_thread), fetchOffset(0), stayAtPC(false),
-        numInst(0), numOp(0), numLoad(0), lastIcacheStall(0), lastDcacheStall(0)
+        numInst(0), numOp(0), numLoad(0), lastIcacheStall(0),
+        lastDcacheStall(0), execContextStats(cpu, thread)
     { }
 
-    /** Reads an integer register. */
-    IntReg readIntRegOperand(const StaticInst *si, int idx) override
+    RegVal
+    getRegOperand(const StaticInst *si, int idx) override
     {
-        numIntRegReads++;
-        return thread->readIntReg(si->srcRegIdx(idx));
+        const RegId &reg = si->srcRegIdx(idx);
+        if (reg.is(InvalidRegClass))
+            return 0;
+        (*execContextStats.numRegReads[reg.classValue()])++;
+        return thread->getReg(reg);
     }
 
-    /** Sets an integer register to a value. */
-    void setIntRegOperand(const StaticInst *si, int idx, IntReg val) override
+    void
+    getRegOperand(const StaticInst *si, int idx, void *val) override
     {
-        numIntRegWrites++;
-        thread->setIntReg(si->destRegIdx(idx), val);
+        const RegId &reg = si->srcRegIdx(idx);
+        (*execContextStats.numRegReads[reg.classValue()])++;
+        thread->getReg(reg, val);
     }
 
-    /** Reads a floating point register of single register width. */
-    FloatReg readFloatRegOperand(const StaticInst *si, int idx) override
+    void *
+    getWritableRegOperand(const StaticInst *si, int idx) override
     {
-        numFpRegReads++;
-        int reg_idx = si->srcRegIdx(idx) - TheISA::FP_Reg_Base;
-        return thread->readFloatReg(reg_idx);
+        const RegId &reg = si->destRegIdx(idx);
+        (*execContextStats.numRegWrites[reg.classValue()])++;
+        return thread->getWritableReg(reg);
     }
 
-    /** Reads a floating point register in its binary format, instead
-     * of by value. */
-    FloatRegBits readFloatRegOperandBits(const StaticInst *si, int idx) override
+    void
+    setRegOperand(const StaticInst *si, int idx, RegVal val) override
     {
-        numFpRegReads++;
-        int reg_idx = si->srcRegIdx(idx) - TheISA::FP_Reg_Base;
-        return thread->readFloatRegBits(reg_idx);
+        const RegId &reg = si->destRegIdx(idx);
+        if (reg.is(InvalidRegClass))
+            return;
+        (*execContextStats.numRegWrites[reg.classValue()])++;
+        thread->setReg(reg, val);
     }
 
-    /** Sets a floating point register of single width to a value. */
-    void setFloatRegOperand(const StaticInst *si, int idx,
-                            FloatReg val) override
+    void
+    setRegOperand(const StaticInst *si, int idx, const void *val) override
     {
-        numFpRegWrites++;
-        int reg_idx = si->destRegIdx(idx) - TheISA::FP_Reg_Base;
-        thread->setFloatReg(reg_idx, val);
+        const RegId &reg = si->destRegIdx(idx);
+        (*execContextStats.numRegWrites[reg.classValue()])++;
+        thread->setReg(reg, val);
     }
 
-    /** Sets the bits of a floating point register of single width
-     * to a binary value. */
-    void setFloatRegOperandBits(const StaticInst *si, int idx,
-                                FloatRegBits val) override
+    RegVal
+    readMiscRegOperand(const StaticInst *si, int idx) override
     {
-        numFpRegWrites++;
-        int reg_idx = si->destRegIdx(idx) - TheISA::FP_Reg_Base;
-        thread->setFloatRegBits(reg_idx, val);
+        cpu->executeStats[thread->threadId()]->numMiscRegReads++;
+        const RegId& reg = si->srcRegIdx(idx);
+        assert(reg.is(MiscRegClass));
+        return thread->readMiscReg(reg.index());
     }
 
-    CCReg readCCRegOperand(const StaticInst *si, int idx) override
+    void
+    setMiscRegOperand(const StaticInst *si, int idx, RegVal val) override
     {
-        numCCRegReads++;
-        int reg_idx = si->srcRegIdx(idx) - TheISA::CC_Reg_Base;
-        return thread->readCCReg(reg_idx);
-    }
-
-    void setCCRegOperand(const StaticInst *si, int idx, CCReg val) override
-    {
-        numCCRegWrites++;
-        int reg_idx = si->destRegIdx(idx) - TheISA::CC_Reg_Base;
-        thread->setCCReg(reg_idx, val);
-    }
-
-    MiscReg readMiscRegOperand(const StaticInst *si, int idx) override
-    {
-        numIntRegReads++;
-        int reg_idx = si->srcRegIdx(idx) - TheISA::Misc_Reg_Base;
-        return thread->readMiscReg(reg_idx);
-    }
-
-    void setMiscRegOperand(const StaticInst *si, int idx,
-                           const MiscReg &val) override
-    {
-        numIntRegWrites++;
-        int reg_idx = si->destRegIdx(idx) - TheISA::Misc_Reg_Base;
-        thread->setMiscReg(reg_idx, val);
+        cpu->executeStats[thread->threadId()]->numMiscRegWrites++;
+        const RegId& reg = si->destRegIdx(idx);
+        assert(reg.is(MiscRegClass));
+        thread->setMiscReg(reg.index(), val);
     }
 
     /**
      * Reads a miscellaneous register, handling any architectural
      * side effects due to reading that register.
      */
-    MiscReg readMiscReg(int misc_reg) override
+    RegVal
+    readMiscReg(int misc_reg) override
     {
-        numIntRegReads++;
+        cpu->executeStats[thread->threadId()]->numMiscRegReads++;
         return thread->readMiscReg(misc_reg);
     }
 
@@ -253,61 +255,82 @@ class SimpleExecContext : public ExecContext {
      * Sets a miscellaneous register, handling any architectural
      * side effects due to writing that register.
      */
-    void setMiscReg(int misc_reg, const MiscReg &val) override
+    void
+    setMiscReg(int misc_reg, RegVal val) override
     {
-        numIntRegWrites++;
+        cpu->executeStats[thread->threadId()]->numMiscRegWrites++;
         thread->setMiscReg(misc_reg, val);
     }
 
-    PCState pcState() const override
+    const PCStateBase &
+    pcState() const override
     {
         return thread->pcState();
     }
 
-    void pcState(const PCState &val) override
+    void
+    pcState(const PCStateBase &val) override
     {
         thread->pcState(val);
     }
 
-
-    /**
-     * Record the effective address of the instruction.
-     *
-     * @note Only valid for memory ops.
-     */
-    void setEA(Addr EA) override
-    { panic("BaseSimpleCPU::setEA() not implemented\n"); }
-
-    /**
-     * Get the effective address of the instruction.
-     *
-     * @note Only valid for memory ops.
-     */
-    Addr getEA() const override
-    { panic("BaseSimpleCPU::getEA() not implemented\n"); }
-
-    Fault readMem(Addr addr, uint8_t *data, unsigned int size,
-                  Request::Flags flags) override
+    Fault
+    readMem(Addr addr, uint8_t *data, unsigned int size,
+            Request::Flags flags,
+            const std::vector<bool>& byte_enable)
+        override
     {
-        return cpu->readMem(addr, data, size, flags);
+        assert(byte_enable.size() == size);
+        return cpu->readMem(addr, data, size, flags, byte_enable);
     }
 
-    Fault initiateMemRead(Addr addr, unsigned int size,
-                          Request::Flags flags) override
+    Fault
+    initiateMemRead(Addr addr, unsigned int size,
+                    Request::Flags flags,
+                    const std::vector<bool>& byte_enable)
+        override
     {
-        return cpu->initiateMemRead(addr, size, flags);
+        assert(byte_enable.size() == size);
+        return cpu->initiateMemRead(addr, size, flags, byte_enable);
     }
 
-    Fault writeMem(uint8_t *data, unsigned int size, Addr addr,
-                   Request::Flags flags, uint64_t *res) override
+    Fault
+    writeMem(uint8_t *data, unsigned int size, Addr addr,
+             Request::Flags flags, uint64_t *res,
+             const std::vector<bool>& byte_enable)
+        override
     {
-        return cpu->writeMem(data, size, addr, flags, res);
+        assert(byte_enable.size() == size);
+        return cpu->writeMem(data, size, addr, flags, res,
+            byte_enable);
+    }
+
+    Fault
+    amoMem(Addr addr, uint8_t *data, unsigned int size,
+           Request::Flags flags, AtomicOpFunctorPtr amo_op) override
+    {
+        return cpu->amoMem(addr, data, size, flags, std::move(amo_op));
+    }
+
+    Fault
+    initiateMemAMO(Addr addr, unsigned int size,
+                   Request::Flags flags,
+                   AtomicOpFunctorPtr amo_op) override
+    {
+        return cpu->initiateMemAMO(addr, size, flags, std::move(amo_op));
+    }
+
+    Fault
+    initiateMemMgmtCmd(Request::Flags flags) override
+    {
+        return cpu->initiateMemMgmtCmd(flags);
     }
 
     /**
      * Sets the number of consecutive store conditional failures.
      */
-    void setStCondFailures(unsigned int sc_failures) override
+    void
+    setStCondFailures(unsigned int sc_failures) override
     {
         thread->setStCondFailures(sc_failures);
     }
@@ -315,52 +338,23 @@ class SimpleExecContext : public ExecContext {
     /**
      * Returns the number of consecutive store conditional failures.
      */
-    unsigned int readStCondFailures() const override
+    unsigned int
+    readStCondFailures() const override
     {
         return thread->readStCondFailures();
     }
 
-    /**
-     * Executes a syscall specified by the callnum.
-     */
-    void syscall(int64_t callnum) override
-    {
-        if (FullSystem)
-            panic("Syscall emulation isn't available in FS mode.");
-
-        thread->syscall(callnum);
-    }
-
     /** Returns a pointer to the ThreadContext. */
-    ThreadContext *tcBase() override
-    {
-        return thread->getTC();
-    }
+    ThreadContext *tcBase() const override { return thread->getTC(); }
 
-    /**
-     * Somewhat Alpha-specific function that handles returning from an
-     * error or interrupt.
-     */
-    Fault hwrei() override
-    {
-        return thread->hwrei();
-    }
-
-    /**
-     * Check for special simulator handling of specific PAL calls.  If
-     * return value is false, actual PAL call will be suppressed.
-     */
-    bool simPalCheck(int palFunc) override
-    {
-        return thread->simPalCheck(palFunc);
-    }
-
-    bool readPredicate() override
+    bool
+    readPredicate() const override
     {
         return thread->readPredicate();
     }
 
-    void setPredicate(bool val) override
+    void
+    setPredicate(bool val) override
     {
         thread->setPredicate(val);
 
@@ -369,51 +363,77 @@ class SimpleExecContext : public ExecContext {
         }
     }
 
+    bool
+    readMemAccPredicate() const override
+    {
+        return thread->readMemAccPredicate();
+    }
+
+    void
+    setMemAccPredicate(bool val) override
+    {
+        thread->setMemAccPredicate(val);
+    }
+
+    uint64_t
+    getHtmTransactionUid() const override
+    {
+        return tcBase()->getHtmCheckpointPtr()->getHtmUid();
+    }
+
+    uint64_t
+    newHtmTransactionUid() const override
+    {
+        return tcBase()->getHtmCheckpointPtr()->newHtmUid();
+    }
+
+    bool
+    inHtmTransactionalState() const override
+    {
+        return (getHtmTransactionalDepth() > 0);
+    }
+
+    uint64_t
+    getHtmTransactionalDepth() const override
+    {
+        assert(thread->htmTransactionStarts >= thread->htmTransactionStops);
+        return (thread->htmTransactionStarts - thread->htmTransactionStops);
+    }
+
     /**
      * Invalidate a page in the DTLB <i>and</i> ITLB.
      */
-    void demapPage(Addr vaddr, uint64_t asn) override
+    void
+    demapPage(Addr vaddr, uint64_t asn) override
     {
         thread->demapPage(vaddr, asn);
     }
 
-    void armMonitor(Addr address) override
+    void
+    armMonitor(Addr address) override
     {
         cpu->armMonitor(thread->threadId(), address);
     }
 
-    bool mwait(PacketPtr pkt) override
+    bool
+    mwait(PacketPtr pkt) override
     {
         return cpu->mwait(thread->threadId(), pkt);
     }
 
-    void mwaitAtomic(ThreadContext *tc) override
+    void
+    mwaitAtomic(ThreadContext *tc) override
     {
-        cpu->mwaitAtomic(thread->threadId(), tc, thread->dtb);
+        cpu->mwaitAtomic(thread->threadId(), tc, thread->mmu);
     }
 
-    AddressMonitor *getAddrMonitor() override
+    AddressMonitor *
+    getAddrMonitor() override
     {
         return cpu->getCpuAddrMonitor(thread->threadId());
     }
-
-#if THE_ISA == MIPS_ISA
-    MiscReg readRegOtherThread(int regIdx, ThreadID tid = InvalidThreadID)
-        override
-    {
-        panic("Simple CPU models do not support multithreaded "
-              "register access.");
-    }
-
-    void setRegOtherThread(int regIdx, MiscReg val,
-                           ThreadID tid = InvalidThreadID) override
-    {
-        panic("Simple CPU models do not support multithreaded "
-              "register access.");
-    }
-
-#endif
-
 };
+
+} // namespace gem5
 
 #endif // __CPU_EXEC_CONTEXT_HH__

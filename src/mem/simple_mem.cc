@@ -36,24 +36,27 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Ron Dreslinski
- *          Ali Saidi
- *          Andreas Hansson
  */
 
-#include "base/random.hh"
 #include "mem/simple_mem.hh"
+
+#include "base/random.hh"
+#include "base/trace.hh"
 #include "debug/Drain.hh"
 
-using namespace std;
+namespace gem5
+{
 
-SimpleMemory::SimpleMemory(const SimpleMemoryParams* p) :
+namespace memory
+{
+
+SimpleMemory::SimpleMemory(const SimpleMemoryParams &p) :
     AbstractMemory(p),
-    port(name() + ".port", *this), latency(p->latency),
-    latency_var(p->latency_var), bandwidth(p->bandwidth), isBusy(false),
+    port(name() + ".port", *this), latency(p.latency),
+    latency_var(p.latency_var), bandwidth(p.bandwidth), isBusy(false),
     retryReq(false), retryResp(false),
-    releaseEvent(this), dequeueEvent(this)
+    releaseEvent([this]{ release(); }, name()),
+    dequeueEvent([this]{ dequeue(); }, name())
 {
 }
 
@@ -79,6 +82,14 @@ SimpleMemory::recvAtomic(PacketPtr pkt)
     return getLatency();
 }
 
+Tick
+SimpleMemory::recvAtomicBackdoor(PacketPtr pkt, MemBackdoorPtr &_backdoor)
+{
+    Tick latency = recvAtomic(pkt);
+    getBackdoor(_backdoor);
+    return latency;
+}
+
 void
 SimpleMemory::recvFunctional(PacketPtr pkt)
 {
@@ -90,11 +101,18 @@ SimpleMemory::recvFunctional(PacketPtr pkt)
     auto p = packetQueue.begin();
     // potentially update the packets in our packet queue as well
     while (!done && p != packetQueue.end()) {
-        done = pkt->checkFunctional(p->pkt);
+        done = pkt->trySatisfyFunctional(p->pkt);
         ++p;
     }
 
     pkt->popLabel();
+}
+
+void
+SimpleMemory::recvMemBackdoorReq(const MemBackdoorReq &req,
+        MemBackdoorPtr &_backdoor)
+{
+    getBackdoor(_backdoor);
 }
 
 bool
@@ -147,7 +165,7 @@ SimpleMemory::recvTimingReq(PacketPtr pkt)
     // queue if there is one
     bool needsResponse = pkt->needsResponse();
     recvAtomic(pkt);
-    // turn packet around to go back to requester if response expected
+    // turn packet around to go back to requestor if response expected
     if (needsResponse) {
         // recvAtomic() should already have turned packet into
         // atomic response
@@ -163,7 +181,7 @@ SimpleMemory::recvTimingReq(PacketPtr pkt)
         auto i = packetQueue.end();
         --i;
         while (i != packetQueue.begin() && when_to_send < i->tick &&
-               i->pkt->getAddr() != pkt->getAddr())
+               !i->pkt->matchAddr(pkt))
             --i;
 
         // emplace inserts the element before the position pointed to by
@@ -230,11 +248,11 @@ SimpleMemory::recvRespRetry()
     dequeue();
 }
 
-BaseSlavePort &
-SimpleMemory::getSlavePort(const std::string &if_name, PortID idx)
+Port &
+SimpleMemory::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name != "port") {
-        return MemObject::getSlavePort(if_name, idx);
+        return AbstractMemory::getPort(if_name, idx);
     } else {
         return port;
     }
@@ -253,43 +271,54 @@ SimpleMemory::drain()
 
 SimpleMemory::MemoryPort::MemoryPort(const std::string& _name,
                                      SimpleMemory& _memory)
-    : SlavePort(_name, &_memory), memory(_memory)
+    : ResponsePort(_name), mem(_memory)
 { }
 
 AddrRangeList
 SimpleMemory::MemoryPort::getAddrRanges() const
 {
     AddrRangeList ranges;
-    ranges.push_back(memory.getAddrRange());
+    ranges.push_back(mem.getAddrRange());
     return ranges;
 }
 
 Tick
 SimpleMemory::MemoryPort::recvAtomic(PacketPtr pkt)
 {
-    return memory.recvAtomic(pkt);
+    return mem.recvAtomic(pkt);
+}
+
+Tick
+SimpleMemory::MemoryPort::recvAtomicBackdoor(
+        PacketPtr pkt, MemBackdoorPtr &_backdoor)
+{
+    return mem.recvAtomicBackdoor(pkt, _backdoor);
 }
 
 void
 SimpleMemory::MemoryPort::recvFunctional(PacketPtr pkt)
 {
-    memory.recvFunctional(pkt);
+    mem.recvFunctional(pkt);
+}
+
+void
+SimpleMemory::MemoryPort::recvMemBackdoorReq(const MemBackdoorReq &req,
+        MemBackdoorPtr &backdoor)
+{
+    mem.recvMemBackdoorReq(req, backdoor);
 }
 
 bool
 SimpleMemory::MemoryPort::recvTimingReq(PacketPtr pkt)
 {
-    return memory.recvTimingReq(pkt);
+    return mem.recvTimingReq(pkt);
 }
 
 void
 SimpleMemory::MemoryPort::recvRespRetry()
 {
-    memory.recvRespRetry();
+    mem.recvRespRetry();
 }
 
-SimpleMemory*
-SimpleMemoryParams::create()
-{
-    return new SimpleMemory(this);
-}
+} // namespace memory
+} // namespace gem5

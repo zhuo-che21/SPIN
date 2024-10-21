@@ -23,78 +23,128 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Tushar Krishna
 
 import math
 import m5
 from m5.objects import *
 from m5.defines import buildEnv
-from m5.util import addToPath, fatal
+from m5.util import addToPath, fatal, warn
+
 
 def define_options(parser):
     # By default, ruby uses the simple timing cpu
-    parser.set_defaults(cpu_type="timing")
+    parser.set_defaults(cpu_type="TimingSimpleCPU")
 
-    parser.add_option("--topology", type="string", default="Crossbar",
-                      help="check configs/topologies for complete set")
-    parser.add_option("--mesh-rows", type="int", default=0,
-                      help="the number of rows in the mesh topology")
-    parser.add_option("--network", type="choice", default="simple",
-                      choices=['simple', 'garnet2.0'],
-                      help="'simple'|'garnet2.0'")
-    parser.add_option("--router-latency", action="store", type="int",
-                      default=1,
-                      help="""number of pipeline stages in the garnet router.
-                            Has to be >= 1.
-                            Can be over-ridden on a per router basis
-                            in the topology file.""")
-    parser.add_option("--link-latency", action="store", type="int", default=1,
-                      help="""latency of each link the simple/garnet networks.
-                            Has to be >= 1.
-                            Can be over-ridden on a per link basis
-                            in the topology file.""")
-    parser.add_option("--link-width-bits", action="store", type="int",
-                      default=128,
-                      help="width in bits for all links inside garnet.")
-    parser.add_option("--vcs-per-vnet", action="store", type="int", default=4,
-                      help="""number of virtual channels per virtual network
-                            inside garnet network.""")
-    parser.add_option("--enable-wormhole", action="store", type="int",
+    parser.add_argument(
+        "--topology",
+        type=str,
+        default="Crossbar",
+        help="check configs/topologies for complete set",
+    )
+    parser.add_argument(
+        "--mesh-rows",
+        type=int,
+        default=0,
+        help="the number of rows in the mesh topology",
+    )
+    parser.add_argument(
+        "--mesh-heights",
+        type=int,
+        default=1,
+        help="the heights of the 3D mesh topology"
+    )
+    parser.add_argument(
+        "--network",
+        default="simple",
+        choices=["simple", "garnet"],
+        help="""'simple'|'garnet' (garnet2.0 will be deprecated.)""",
+    )
+    parser.add_argument(
+        "--router-latency",
+        action="store",
+        type=int,
+        default=1,
+        help="""number of pipeline stages in the garnet router.
+            Has to be >= 1.
+            Can be over-ridden on a per router basis
+            in the topology file.""",
+    )
+    parser.add_argument(
+        "--link-latency",
+        action="store",
+        type=int,
+        default=1,
+        help="""latency of each link the simple/garnet networks.
+        Has to be >= 1. Can be over-ridden on a per link basis
+        in the topology file.""",
+    )
+    parser.add_argument(
+        "--link-width-bits",
+        action="store",
+        type=int,
+        default=128,
+        help="width in bits for all links inside garnet.",
+    )
+    parser.add_argument(
+        "--vcs-per-vnet",
+        action="store",
+        type=int,
+        default=4,
+        help="""number of virtual channels per virtual network
+            inside garnet network.""",
+    )
+    parser.add_argument("--enable-wormhole", action="store", type=int,
                         default=0, help="""To enable the wormhole routing;
                             by default its disabled.""")
-    
-
-    parser.add_option("--enable-intraswap", action="store", type="int",
-                        default=0, help="""To enable intra-swap of flits within 
-                        the same queue. Each number is associated with different policy.;
-                            by default its disabled.""")
-    parser.add_option("--intraswap-threshold", action="store", type="int",
-                        default=100, help="""Threshold associated on when to do 
-                        swap""")
-    parser.add_option("--wormhole-buffer-depth", action="store", type="int", default=4,
+    parser.add_argument("--wormhole-buffer-depth", action="store", type=int, default=16,
                       help="""size of wormhole buffer""")
-    
-    parser.add_option("--buffers-per-data-vc", action="store", type="int", default=4,
-                      help="""size of data buffer""")
-
-    parser.add_option("--routing-algorithm", action="store", type="int",
-                      default=0,
-                      help="""routing algorithm in network.
-                            0: weight-based table
-                            1: XY (for Mesh. see garnet2.0/RoutingUnit.cc)
-                            2: Random (for Mesh. see garnet2.0/RoutingUnit.cc)
-                            3: Custom (see garnet2.0/RoutingUnit.cc""")
-    parser.add_option("--network-fault-model", action="store_true",
-                      default=False,
-                      help="""enable network fault model:
-                            see src/mem/ruby/network/fault_model/""")
+    parser.add_argument(
+        "--routing-algorithm",
+        action="store",
+        type=int,
+        default=0,
+        help="""routing algorithm in network.
+            0: weight-based table
+            1: XY (for Mesh. see garnet/RoutingUnit.cc)
+            2: Custom (see garnet/RoutingUnit.cc""",
+    )
+    parser.add_argument(
+        "--network-fault-model",
+        action="store_true",
+        default=False,
+        help="""enable network fault model:
+            see src/mem/ruby/network/fault_model/""",
+    )
+    parser.add_argument(
+        "--garnet-deadlock-threshold",
+        action="store",
+        type=int,
+        default=50000,
+        help="network-level deadlock threshold.",
+    )
+    parser.add_argument(
+        "--simple-physical-channels",
+        action="store_true",
+        default=False,
+        help="""SimpleNetwork links uses a separate physical
+            channel for each virtual network""",
+    )
 
 
 def create_network(options, ruby):
 
-    # Set the network classes based on the command line options
+    # Allow legacy users to use garnet through garnet2.0 option
+    # until next gem5 release.
     if options.network == "garnet2.0":
+        warn(
+            "Usage of option 'garnet2.0' will be depracated. "
+            "Please use 'garnet' for using the latest garnet "
+            "version. Current version: 3.0"
+        )
+        options.network = "garnet"
+
+    # Set the network classes based on the command line options
+    if options.network == "garnet":
         NetworkClass = GarnetNetwork
         IntLinkClass = GarnetIntLink
         ExtLinkClass = GarnetExtLink
@@ -110,49 +160,140 @@ def create_network(options, ruby):
 
     # Instantiate the network object
     # so that the controllers can connect to it.
-    network = NetworkClass(ruby_system = ruby, topology = options.topology,
-            routers = [], ext_links = [], int_links = [], netifs = [])
+    network = NetworkClass(
+        ruby_system=ruby,
+        topology=options.topology,
+        routers=[],
+        ext_links=[],
+        int_links=[],
+        netifs=[],
+    )
 
     return (network, IntLinkClass, ExtLinkClass, RouterClass, InterfaceClass)
 
+
 def init_network(options, network, InterfaceClass):
 
-    if options.network == "garnet2.0":
-        network.num_rows = options.mesh_rows
-        network.vcs_per_vnet = options.vcs_per_vnet
-        network.ni_flit_size = options.link_width_bits / 8
-        network.routing_algorithm = options.routing_algorithm
-
     if options.enable_wormhole == 1:
-        assert(options.network == "garnet2.0")
+        # assert(options.network == "garnet2.0")
         network.enable_wormhole = options.enable_wormhole
         network.wormhole_buffer_depth = options.wormhole_buffer_depth
         network.vcs_per_vnet = 1 # Use 1 VC.
+        
+    if options.network == "garnet":
+        network.num_rows = options.mesh_rows
+        network.num_heights = options.mesh_heights
+        network.vcs_per_vnet = options.vcs_per_vnet
+        network.ni_flit_size = options.link_width_bits / 8
+        network.routing_algorithm = options.routing_algorithm
+        network.garnet_deadlock_threshold = options.garnet_deadlock_threshold
 
-    if options.enable_intraswap >= 1:
-        assert(options.network == "garnet2.0")
-        network.enable_intraswap = options.enable_intraswap
-        network.wormhole_buffer_depth = options.wormhole_buffer_depth
-        network.vcs_per_vnet = 1 # Use 1 VC.
+        # Create Bridges and connect them to the corresponding links
+        for intLink in network.int_links:
+            intLink.src_net_bridge = NetworkBridge(
+                link=intLink.network_link,
+                vtype="OBJECT_LINK",
+                width=intLink.src_node.width,
+            )
+            intLink.src_cred_bridge = NetworkBridge(
+                link=intLink.credit_link,
+                vtype="LINK_OBJECT",
+                width=intLink.src_node.width,
+            )
+            intLink.dst_net_bridge = NetworkBridge(
+                link=intLink.network_link,
+                vtype="LINK_OBJECT",
+                width=intLink.dst_node.width,
+            )
+            intLink.dst_cred_bridge = NetworkBridge(
+                link=intLink.credit_link,
+                vtype="OBJECT_LINK",
+                width=intLink.dst_node.width,
+            )
 
-    if options.intraswap_threshold >= 0: #threshold can't be negative #use of threshold: This is a trigger, to specify at what queue length to do swap
-        assert(options.network == "garnet2.0")
-        network.intraswap_threshold = options.intraswap_threshold
-        network.vcs_per_vnet = 1 # Use 1 VC.
-    if options.buffers_per_data_vc >= 0: #buffers can't be negative
-    	assert(options.network == "garnet2.0")
-    	network.buffers_per_data_vc = options.buffers_per_data_vc
+        for extLink in network.ext_links:
+            ext_net_bridges = []
+            ext_net_bridges.append(
+                NetworkBridge(
+                    link=extLink.network_links[0],
+                    vtype="OBJECT_LINK",
+                    width=extLink.width,
+                )
+            )
+            ext_net_bridges.append(
+                NetworkBridge(
+                    link=extLink.network_links[1],
+                    vtype="LINK_OBJECT",
+                    width=extLink.width,
+                )
+            )
+            extLink.ext_net_bridge = ext_net_bridges
 
+            ext_credit_bridges = []
+            ext_credit_bridges.append(
+                NetworkBridge(
+                    link=extLink.credit_links[0],
+                    vtype="LINK_OBJECT",
+                    width=extLink.width,
+                )
+            )
+            ext_credit_bridges.append(
+                NetworkBridge(
+                    link=extLink.credit_links[1],
+                    vtype="OBJECT_LINK",
+                    width=extLink.width,
+                )
+            )
+            extLink.ext_cred_bridge = ext_credit_bridges
+
+            int_net_bridges = []
+            int_net_bridges.append(
+                NetworkBridge(
+                    link=extLink.network_links[0],
+                    vtype="LINK_OBJECT",
+                    width=extLink.int_node.width,
+                )
+            )
+            int_net_bridges.append(
+                NetworkBridge(
+                    link=extLink.network_links[1],
+                    vtype="OBJECT_LINK",
+                    width=extLink.int_node.width,
+                )
+            )
+            extLink.int_net_bridge = int_net_bridges
+
+            int_cred_bridges = []
+            int_cred_bridges.append(
+                NetworkBridge(
+                    link=extLink.credit_links[0],
+                    vtype="OBJECT_LINK",
+                    width=extLink.int_node.width,
+                )
+            )
+            int_cred_bridges.append(
+                NetworkBridge(
+                    link=extLink.credit_links[1],
+                    vtype="LINK_OBJECT",
+                    width=extLink.int_node.width,
+                )
+            )
+            extLink.int_cred_bridge = int_cred_bridges
 
     if options.network == "simple":
+        if options.simple_physical_channels:
+            network.physical_vnets_channels = [1] * int(
+                network.number_of_virtual_networks
+            )
         network.setup_buffers()
 
     if InterfaceClass != None:
-        netifs = [InterfaceClass(id=i) \
-                  for (i,n) in enumerate(network.ext_links)]
+        netifs = [
+            InterfaceClass(id=i) for (i, n) in enumerate(network.ext_links)
+        ]
         network.netifs = netifs
 
     if options.network_fault_model:
-        assert(options.network == "garnet2.0")
+        assert options.network == "garnet"
         network.enable_fault_model = True
         network.fault_model = FaultModel()

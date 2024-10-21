@@ -27,15 +27,20 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "debug/RubyCacheTrace.hh"
 #include "mem/ruby/system/CacheRecorder.hh"
+
+#include "debug/RubyCacheTrace.hh"
 #include "mem/ruby/system/RubySystem.hh"
 #include "mem/ruby/system/Sequencer.hh"
 
-using namespace std;
+namespace gem5
+{
+
+namespace ruby
+{
 
 void
-TraceRecord::print(ostream& out) const
+TraceRecord::print(std::ostream& out) const
 {
     out << "[TraceRecord: Node, " << m_cntrl_id << ", "
         << m_data_address << ", " << m_pc_address << ", "
@@ -84,9 +89,9 @@ CacheRecorder::enqueueNextFlushRequest()
     if (m_records_flushed < m_records.size()) {
         TraceRecord* rec = m_records[m_records_flushed];
         m_records_flushed++;
-        Request* req = new Request(rec->m_data_address,
-                                   m_block_size_bytes, 0,
-                                   Request::funcMasterId);
+        auto req = std::make_shared<Request>(rec->m_data_address,
+                                             m_block_size_bytes, 0,
+                                             Request::funcRequestorId);
         MemCmd::Command requestType = MemCmd::FlushReq;
         Packet *pkt = new Packet(req, requestType);
 
@@ -111,22 +116,27 @@ CacheRecorder::enqueueNextFetchRequest()
 
         for (int rec_bytes_read = 0; rec_bytes_read < m_block_size_bytes;
                 rec_bytes_read += RubySystem::getBlockSizeBytes()) {
-            Request* req = nullptr;
+            RequestPtr req;
             MemCmd::Command requestType;
 
             if (traceRecord->m_type == RubyRequestType_LD) {
                 requestType = MemCmd::ReadReq;
-                req = new Request(traceRecord->m_data_address + rec_bytes_read,
-                    RubySystem::getBlockSizeBytes(), 0, Request::funcMasterId);
+                req = std::make_shared<Request>(
+                    traceRecord->m_data_address + rec_bytes_read,
+                    RubySystem::getBlockSizeBytes(), 0,
+                                    Request::funcRequestorId);
             }   else if (traceRecord->m_type == RubyRequestType_IFETCH) {
                 requestType = MemCmd::ReadReq;
-                req = new Request(traceRecord->m_data_address + rec_bytes_read,
+                req = std::make_shared<Request>(
+                        traceRecord->m_data_address + rec_bytes_read,
                         RubySystem::getBlockSizeBytes(),
-                        Request::INST_FETCH, Request::funcMasterId);
+                        Request::INST_FETCH, Request::funcRequestorId);
             }   else {
                 requestType = MemCmd::WriteReq;
-                req = new Request(traceRecord->m_data_address + rec_bytes_read,
-                    RubySystem::getBlockSizeBytes(), 0, Request::funcMasterId);
+                req = std::make_shared<Request>(
+                    traceRecord->m_data_address + rec_bytes_read,
+                    RubySystem::getBlockSizeBytes(), 0,
+                                Request::funcRequestorId);
             }
 
             Packet *pkt = new Packet(req, requestType);
@@ -173,7 +183,7 @@ CacheRecorder::aggregateRecords(uint8_t **buf, uint64_t total_size)
     for (int i = 0; i < size; ++i) {
         // Determine if we need to expand the buffer size
         if (current_size + record_size > total_size) {
-            uint8_t* new_buf = new (nothrow) uint8_t[total_size * 2];
+            uint8_t* new_buf = new (std::nothrow) uint8_t[total_size * 2];
             if (new_buf == NULL) {
                 fatal("Unable to allocate buffer of size %s\n",
                       total_size * 2);
@@ -196,3 +206,12 @@ CacheRecorder::aggregateRecords(uint8_t **buf, uint64_t total_size)
     m_records.clear();
     return current_size;
 }
+
+uint64_t
+CacheRecorder::getNumRecords() const
+{
+    return m_records.size();
+}
+
+} // namespace ruby
+} // namespace gem5

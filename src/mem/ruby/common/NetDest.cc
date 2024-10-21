@@ -26,9 +26,15 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "mem/ruby/common/NetDest.hh"
+
 #include <algorithm>
 
-#include "mem/ruby/common/NetDest.hh"
+namespace gem5
+{
+
+namespace ruby
+{
 
 NetDest::NetDest()
 {
@@ -278,3 +284,6 @@ NetDest::isEqual(const NetDest& n) const
     }
     return true;
 }
+
+} // namespace ruby
+} // namespace gem5

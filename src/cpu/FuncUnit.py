@@ -1,4 +1,4 @@
-# Copyright (c) 2010 ARM Limited
+# Copyright (c) 2010, 2017-2018, 2020, 2022 ARM Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -35,34 +35,111 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Authors: Kevin Lim
 
 from m5.SimObject import SimObject
 from m5.params import *
 
+
 class OpClass(Enum):
-    vals = ['No_OpClass', 'IntAlu', 'IntMult', 'IntDiv', 'FloatAdd',
-            'FloatCmp', 'FloatCvt', 'FloatMult', 'FloatMultAcc', 'FloatDiv',
-            'FloatMisc', 'FloatSqrt',
-            'SimdAdd', 'SimdAddAcc', 'SimdAlu', 'SimdCmp', 'SimdCvt',
-            'SimdMisc', 'SimdMult', 'SimdMultAcc', 'SimdShift', 'SimdShiftAcc',
-            'SimdSqrt', 'SimdFloatAdd', 'SimdFloatAlu', 'SimdFloatCmp',
-            'SimdFloatCvt', 'SimdFloatDiv', 'SimdFloatMisc', 'SimdFloatMult',
-            'SimdFloatMultAcc', 'SimdFloatSqrt',
-            'MemRead', 'MemWrite', 'FloatMemRead', 'FloatMemWrite',
-            'IprAccess', 'InstPrefetch']
+    vals = [
+        "No_OpClass",
+        "IntAlu",
+        "IntMult",
+        "IntDiv",
+        "FloatAdd",
+        "FloatCmp",
+        "FloatCvt",
+        "FloatMult",
+        "FloatMultAcc",
+        "FloatDiv",
+        "FloatMisc",
+        "FloatSqrt",
+        "SimdAdd",
+        "SimdAddAcc",
+        "SimdAlu",
+        "SimdCmp",
+        "SimdCvt",
+        "SimdMisc",
+        "SimdMult",
+        "SimdMultAcc",
+        "SimdMatMultAcc",
+        "SimdShift",
+        "SimdShiftAcc",
+        "SimdDiv",
+        "SimdSqrt",
+        "SimdFloatAdd",
+        "SimdFloatAlu",
+        "SimdFloatCmp",
+        "SimdFloatCvt",
+        "SimdFloatDiv",
+        "SimdFloatMisc",
+        "SimdFloatMult",
+        "SimdFloatMultAcc",
+        "SimdFloatMatMultAcc",
+        "SimdFloatSqrt",
+        "SimdReduceAdd",
+        "SimdReduceAlu",
+        "SimdReduceCmp",
+        "SimdFloatReduceAdd",
+        "SimdFloatReduceCmp",
+        "SimdAes",
+        "SimdAesMix",
+        "SimdSha1Hash",
+        "SimdSha1Hash2",
+        "SimdSha256Hash",
+        "SimdSha256Hash2",
+        "SimdShaSigma2",
+        "SimdShaSigma3",
+        "SimdPredAlu",
+        "Matrix",
+        "MatrixMov",
+        "MatrixOP",
+        "MemRead",
+        "MemWrite",
+        "FloatMemRead",
+        "FloatMemWrite",
+        "IprAccess",
+        "InstPrefetch",
+        "VectorUnitStrideLoad",
+        "VectorUnitStrideStore",
+        "VectorUnitStrideMaskLoad",
+        "VectorUnitStrideMaskStore",
+        "VectorStridedLoad",
+        "VectorStridedStore",
+        "VectorIndexedLoad",
+        "VectorIndexedStore",
+        "VectorUnitStrideFaultOnlyFirstLoad",
+        "VectorWholeRegisterLoad",
+        "VectorWholeRegisterStore",
+        "VectorIntegerArith",
+        "VectorFloatArith",
+        "VectorFloatConvert",
+        "VectorIntegerReduce",
+        "VectorFloatReduce",
+        "VectorMisc",
+        "VectorIntegerExtension",
+        "VectorConfig",
+    ]
+
 
 class OpDesc(SimObject):
-    type = 'OpDesc'
+    type = "OpDesc"
     cxx_header = "cpu/func_unit.hh"
+    cxx_class = "gem5::OpDesc"
+
     opClass = Param.OpClass("type of operation")
     opLat = Param.Cycles(1, "cycles until result is available")
-    pipelined = Param.Bool(True, "set to true when the functional unit for"
-        "this op is fully pipelined. False means not pipelined at all.")
+    pipelined = Param.Bool(
+        True,
+        "set to true when the functional unit for"
+        "this op is fully pipelined. False means not pipelined at all.",
+    )
+
 
 class FUDesc(SimObject):
-    type = 'FUDesc'
+    type = "FUDesc"
     cxx_header = "cpu/func_unit.hh"
+    cxx_class = "gem5::FUDesc"
+
     count = Param.Int("number of these FU's available")
     opList = VectorParam.OpDesc("operation classes for this FU type")

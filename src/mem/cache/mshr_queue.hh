@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, 2015-2016 ARM Limited
+ * Copyright (c) 2012-2013, 2015-2016, 2018 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -36,9 +36,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Authors: Erik Hallnor
- *          Andreas Sandberg
  */
 
 /** @file
@@ -48,10 +45,15 @@
 #ifndef __MEM_CACHE_MSHR_QUEUE_HH__
 #define __MEM_CACHE_MSHR_QUEUE_HH__
 
-#include <vector>
+#include <string>
 
+#include "base/types.hh"
 #include "mem/cache/mshr.hh"
 #include "mem/cache/queue.hh"
+#include "mem/packet.hh"
+
+namespace gem5
+{
 
 /**
  * A Class for maintaining a list of pending and allocated memory requests.
@@ -77,7 +79,7 @@ class MSHRQueue : public Queue<MSHR>
      * demand accesses.
      */
     MSHRQueue(const std::string &_label, int num_entries, int reserve,
-              int demand_reserve);
+              int demand_reserve, std::string cache_name);
 
     /**
      * Allocates a new MSHR for the request and size. This places the request
@@ -98,11 +100,25 @@ class MSHRQueue : public Queue<MSHR>
                    Tick when_ready, Counter order, bool alloc_on_fill);
 
     /**
+     * Deallocate a MSHR and its targets
+     */
+    void deallocate(MSHR *mshr) override;
+
+    /**
      * Moves the MSHR to the front of the pending list if it is not
      * in service.
      * @param mshr The entry to move.
      */
     void moveToFront(MSHR *mshr);
+
+    /**
+     * Adds a delay to the provided MSHR and moves MSHRs that will be
+     * ready earlier than this entry to the top of the list
+     *
+     * @param mshr that needs to be delayed
+     * @param delay_ticks ticks of the desired delay
+     */
+    void delay(MSHR *mshr, Tick delay_ticks);
 
     /**
      * Mark the given MSHR as in service. This removes the MSHR from the
@@ -146,5 +162,7 @@ class MSHRQueue : public Queue<MSHR>
         return (allocated < numEntries - (numReserve + 1 + demandReserve));
     }
 };
+
+} // namespace gem5
 
 #endif //__MEM_CACHE_MSHR_QUEUE_HH__
