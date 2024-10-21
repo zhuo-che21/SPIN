@@ -1,8 +1,6 @@
 #!/bin/bash
-
 bench_caps=( 'UNIFORM_RANDOM' 'TORNADO' 'TORNADO_RANDOM_30' 'TORNADO_RANDOM_70' 'BIT_COMPLEMENT' 'BIT_REVERSE' 'BIT_ROTATION' 'TRANSPOSE' 'SHUFFLE' 'NEIGHBOR' 'EDGE_50' )
 bench=( 'uniform_random' 'tornado' 'tornado_random_30' 'tornado_random_70' 'bit_complement' 'bit_reverse' 'bit_rotation' 'transpose' 'shuffle' 'neighbor' 'edge_50' )
-
 out_dir="/usr/scratch/mayank/nocs_intraswap_rslt/wormhole/singleflit_pkt"
 cycles=10000
 vnet=0 #for multi-flit pkt
