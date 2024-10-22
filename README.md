@@ -1,3 +1,10 @@
+Increasing demand for computer power has led to the proliferation of Interconnection Networks in data centers, 
+supercomputers, and computing chips. Among that, the performance of a Network of Chips (NoC) is greatly dependent on the topology.
+
+In this project, we implement a 3D torus and a 3D mesh topology with fully adaptive deadlock-free routing
+algorithm respectively, and compare the performance with 2D and 3D deterministic routing algorithms over
+the torus and mesh topology respectively, in some different traffic modes.
+
 For the mesh part, you should run 
 ```bash
 scons build/NULL/gem5.opt PROTOCOL=Garnet_standalone -j $(nproc)
@@ -13,10 +20,10 @@ configs/example/garnet_synth_traffic.py \
 --inj-vnet=0 --synthetic=`i` \
 --sim-cycles=10000 --injectionrate=`j` 
 ```
-where `i` represent the traffic mode, can be choosed from [uniform_random, tornado, bit_complement, bit_reverse, bit_rotation, neighbor, shuffle, transpose]
-and `j` represent the injection rate. 
+where `i` represent the traffic mode, can be chosen from [uniform_random, tornado, bit_complement, bit_reverse, bit_rotation, neighbor, shuffle, transpose]
+and `j` represents the injection rate. 
 
-And for deterministic routing algorithm, you can run
+For a deterministic routing algorithm, you can run
 ```bash
 ./build/NULL/gem5.opt \
 configs/example/garnet_synth_traffic.py \
@@ -26,8 +33,8 @@ configs/example/garnet_synth_traffic.py \
 --sim-cycles=10000 --injectionrate=`j` 
 ```
 
-Also you could run 
+Also, you could run 
 ```bash
 ./build/NULL/gem5.opt configs/example/project.py
 ```
-directly after build the architecture, which is an integrated command files to get all datas used in our analysis on ``gem5/network_stats_project.txt''. (It takes long time)
+directly after building the architecture, which is an integrated command file to get all data used in our analysis on ``gem5/network_stats_project.txt''. (It takes a long time)
